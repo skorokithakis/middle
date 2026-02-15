@@ -5,6 +5,7 @@
 #     "bleak",
 #     "lameenc",
 #     "openai",
+#     "tqdm",
 # ]
 # ///
 """
@@ -25,6 +26,7 @@ from pathlib import Path
 from bleak import BleakClient, BleakScanner
 import lameenc
 from openai import AuthenticationError, OpenAI, OpenAIError
+from tqdm import tqdm
 
 SERVICE_UUID = "19b10000-e8f2-537e-4f6c-d104768a1214"
 CHARACTERISTIC_FILE_COUNT_UUID = "19b10001-e8f2-537e-4f6c-d104768a1214"
@@ -146,6 +148,7 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
             expected_size = 0
             chunk_count = 0
             received_total_bytes = 0
+            transfer_progress = None
 
             def on_audio_data(_sender: int, data: bytearray) -> None:
                 nonlocal chunk_count
@@ -153,6 +156,11 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
                 received_chunks.append(data)
                 chunk_count += 1
                 received_total_bytes += len(data)
+                if transfer_progress is not None and expected_size > 0:
+                    target_bytes = min(received_total_bytes, expected_size)
+                    delta = target_bytes - transfer_progress.n
+                    if delta > 0:
+                        transfer_progress.update(delta)
                 if chunk_count % 20 == 0:
                     log(
                         f"  Received {chunk_count} chunks, "
@@ -181,6 +189,15 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
                     f"File size: {expected_size} bytes "
                     f"({duration_seconds:.1f}s of audio)."
                 )
+                transfer_progress = tqdm(
+                    total=expected_size,
+                    desc=f"File {i + 1}/{file_count}",
+                    unit="B",
+                    unit_scale=True,
+                    leave=False,
+                )
+                if received_total_bytes > 0:
+                    transfer_progress.update(min(received_total_bytes, expected_size))
 
                 while received_total_bytes < expected_size:
                     elapsed = time.monotonic() - transfer_start
@@ -203,6 +220,8 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
                 )
             finally:
                 await client.stop_notify(CHARACTERISTIC_AUDIO_DATA_UUID)
+                if transfer_progress is not None:
+                    transfer_progress.close()
 
             if received_total_bytes >= expected_size and expected_size > 0:
                 transfer_elapsed = time.monotonic() - transfer_start
@@ -290,7 +309,7 @@ async def main() -> None:
                     f"Transcribing {len(saved_recordings)} recording(s) "
                     f"with {TRANSCRIPTION_MODEL}..."
                 )
-                for filepath in saved_recordings:
+                for filepath in tqdm(saved_recordings, desc="Transcribing", unit="file"):
                     try:
                         transcript_path = transcribe_mp3_file(openai_client, filepath)
                         log(f"Saved transcript: {transcript_path}")
