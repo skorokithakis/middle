@@ -82,7 +82,6 @@ static void start_ble_advertising() {
     return;
   }
   ble_advertising->start();
-  Serial.println("[ble] advertising");
 }
 
 static void configure_button_wakeup() {
@@ -97,8 +96,6 @@ static void enter_deep_sleep() {
   if (ble_advertising != nullptr) {
     ble_advertising->stop();
   }
-  Serial.println("[power] entering deep sleep");
-  Serial.flush();
   delay(20);
   esp_deep_sleep_start();
 }
@@ -113,11 +110,6 @@ static bool ensure_littlefs_ready() {
 
   littlefs_mount_attempted = true;
   littlefs_ready = LittleFS.begin(true);
-  if (littlefs_ready) {
-    Serial.println("[flash] littlefs mounted");
-  } else {
-    Serial.println("[flash] littlefs mount failed");
-  }
   return littlefs_ready;
 }
 
@@ -164,7 +156,6 @@ static void update_file_count() {
   if (file_count_characteristic != nullptr) {
     file_count_characteristic->setValue(file_count);
   }
-  Serial.printf("[flash] pending files: %u\r\n", file_count);
 }
 
 static bool record_and_save() {
@@ -175,11 +166,9 @@ static bool record_and_save() {
   do {
     recording_buffer = (uint8_t *)malloc(maximum_recording_samples);
     if (!recording_buffer) {
-      Serial.println("[rec] buffer allocation failed");
       break;
     }
 
-    Serial.println("[rec] recording started");
     unsigned long record_start_milliseconds = millis();
     size_t sample_count = 0;
 
@@ -201,7 +190,6 @@ static bool record_and_save() {
 
     unsigned long duration_milliseconds = millis() - record_start_milliseconds;
     if (duration_milliseconds < minimum_recording_milliseconds) {
-      Serial.printf("[rec] too short (%lu ms), discarded\r\n", duration_milliseconds);
       break;
     }
 
@@ -209,21 +197,17 @@ static bool record_and_save() {
     snprintf(filename, sizeof(filename), "/rec_%lu.raw", millis());
 
     if (!ensure_littlefs_ready()) {
-      Serial.println("[rec] filesystem unavailable");
       break;
     }
 
     File file = LittleFS.open(filename, FILE_WRITE);
     if (!file) {
-      Serial.println("[rec] failed to open output file");
       break;
     }
 
     size_t written = file.write(recording_buffer, sample_count);
     file.close();
 
-    Serial.printf("[rec] saved %s (%u/%u bytes)\r\n", filename,
-                  (unsigned int)written, (unsigned int)sample_count);
     recording_saved = written == sample_count;
     if (recording_saved) {
       update_file_count();
@@ -240,47 +224,37 @@ static bool record_and_save() {
 static void stream_current_file() {
   current_stream_path = next_recording_path();
   if (current_stream_path.length() == 0) {
-    Serial.println("[ble] no recording available for stream");
     return;
   }
 
   File file = LittleFS.open(current_stream_path, FILE_READ);
   if (!file) {
-    Serial.println("[ble] failed to open recording file");
     current_stream_path = "";
     return;
   }
 
   uint32_t file_size = file.size();
   file_info_characteristic->setValue(file_size);
-  Serial.printf("[ble] streaming %s (%u bytes)\r\n",
-                current_stream_path.c_str(), file_size);
 
   uint8_t chunk[ble_chunk_size];
-  int chunk_count = 0;
   while (file.available()) {
     int bytes_read = file.read(chunk, ble_chunk_size);
     if (bytes_read > 0) {
       audio_data_characteristic->setValue(chunk, bytes_read);
       audio_data_characteristic->notify();
-      chunk_count++;
       delay(ble_chunk_gap_milliseconds);
     }
   }
   file.close();
-
-  Serial.printf("[ble] stream complete: %d chunks\r\n", chunk_count);
 }
 
 class server_callbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     client_connected = true;
-    Serial.println("[ble] client connected");
   }
 
   void onDisconnect(BLEServer *server) override {
     client_connected = false;
-    Serial.println("[ble] client disconnected");
     if (pending_recording_count > 0) {
       start_ble_advertising();
     } else {
@@ -294,7 +268,6 @@ class command_callbacks : public BLECharacteristicCallbacks {
     String value = characteristic->getValue();
     if (value.length() > 0) {
       pending_command = (uint8_t)value[0];
-      Serial.printf("[ble] command: 0x%02X\r\n", pending_command);
     }
   }
 };
@@ -327,7 +300,6 @@ static void init_ble() {
 }
 
 void setup() {
-  Serial.begin(115200);
   set_status_led_off();
 
   pinMode(pin_mic_power, OUTPUT);
@@ -337,16 +309,12 @@ void setup() {
   analogReadResolution(12);
   analogSetAttenuation(ADC_11db);
 
-  Serial.println();
-  Serial.println("[boot] middle running");
-
   configure_button_wakeup();
   esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
   bool woke_from_button = wakeup_cause == ESP_SLEEP_WAKEUP_EXT0 ||
                           wakeup_cause == ESP_SLEEP_WAKEUP_EXT1;
 
   if (!woke_from_button) {
-    Serial.println("[power] cold boot, sleeping until button press");
     enter_deep_sleep();
   }
 
@@ -372,7 +340,6 @@ void loop() {
   int button_state = digitalRead(pin_button);
   if (button_state != last_button_state) {
     last_button_state = button_state;
-    Serial.printf("[button] %s\r\n", button_state == LOW ? "pressed" : "released");
     if (button_state == LOW) {
       bool recording_saved = record_and_save();
       if (!recording_saved) {
@@ -396,17 +363,11 @@ void loop() {
 
       if (path_to_delete.length() > 0) {
         bool removed = LittleFS.remove(path_to_delete);
-        Serial.printf("[ble] ack delete %s -> %s\r\n", path_to_delete.c_str(),
-                      removed ? "ok" : "failed");
         if (removed) {
           current_stream_path = "";
         }
-      } else {
-        Serial.println("[ble] ack received but no file path to delete");
       }
       update_file_count();
-    } else if (command == command_sync_done) {
-      Serial.println("[ble] sync done");
     }
   }
 
