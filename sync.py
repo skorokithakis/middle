@@ -161,11 +161,6 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
                     delta = target_bytes - transfer_progress.n
                     if delta > 0:
                         transfer_progress.update(delta)
-                if chunk_count % 20 == 0:
-                    log(
-                        f"  Received {chunk_count} chunks, "
-                        f"{received_total_bytes} bytes so far..."
-                    )
                 chunk_received.set()
 
             await client.start_notify(
