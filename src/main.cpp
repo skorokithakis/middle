@@ -8,11 +8,13 @@
 
 static const int pin_button = 12;
 static const int pin_mic = 9;
+static const int pin_mic_power = 8;
 
 static const int sample_rate = 16000;
 static const unsigned long sample_interval_microseconds = 1000000 / sample_rate;
 static const unsigned long minimum_recording_milliseconds = 1000;
 static const size_t maximum_recording_samples = sample_rate * 10;
+static const size_t microphone_startup_fade_samples = sample_rate / 200;
 
 static const char *service_uuid = "19b10000-e8f2-537e-4f6c-d104768a1214";
 static const char *characteristic_file_count_uuid =
@@ -67,6 +69,10 @@ static void set_status_led_off() {
 #endif
 }
 
+static void set_microphone_power(bool enabled) {
+  digitalWrite(pin_mic_power, enabled ? LOW : HIGH);
+}
+
 static bool ble_window_active() {
   return (long)(ble_active_until_milliseconds - millis()) > 0;
 }
@@ -87,6 +93,7 @@ static void configure_button_wakeup() {
 
 static void enter_deep_sleep() {
   set_status_led_off();
+  set_microphone_power(false);
   if (ble_advertising != nullptr) {
     ble_advertising->stop();
   }
@@ -161,56 +168,73 @@ static void update_file_count() {
 }
 
 static bool record_and_save() {
-  uint8_t *recording_buffer = (uint8_t *)malloc(maximum_recording_samples);
-  if (!recording_buffer) {
-    Serial.println("[rec] buffer allocation failed");
-    return false;
-  }
+  set_microphone_power(true);
+  bool recording_saved = false;
+  uint8_t *recording_buffer = nullptr;
 
-  Serial.println("[rec] recording started");
-  unsigned long record_start_milliseconds = millis();
-  size_t sample_count = 0;
-
-  while (digitalRead(pin_button) == LOW && sample_count < maximum_recording_samples) {
-    unsigned long sample_start_microseconds = micros();
-    uint16_t raw = analogRead(pin_mic);
-    recording_buffer[sample_count++] = (uint8_t)(raw >> 4);
-
-    while (micros() - sample_start_microseconds < sample_interval_microseconds) {
+  do {
+    recording_buffer = (uint8_t *)malloc(maximum_recording_samples);
+    if (!recording_buffer) {
+      Serial.println("[rec] buffer allocation failed");
+      break;
     }
-  }
 
-  unsigned long duration_milliseconds = millis() - record_start_milliseconds;
-  if (duration_milliseconds < minimum_recording_milliseconds) {
-    Serial.printf("[rec] too short (%lu ms), discarded\r\n", duration_milliseconds);
+    Serial.println("[rec] recording started");
+    unsigned long record_start_milliseconds = millis();
+    size_t sample_count = 0;
+
+    while (digitalRead(pin_button) == LOW && sample_count < maximum_recording_samples) {
+      unsigned long sample_start_microseconds = micros();
+      uint16_t raw = analogRead(pin_mic);
+      uint8_t sample = (uint8_t)(raw >> 4);
+      if (sample_count < microphone_startup_fade_samples) {
+        int16_t centered = (int16_t)sample - 128;
+        int32_t scaled = (int32_t)centered * (int32_t)(sample_count + 1) /
+                         (int32_t)microphone_startup_fade_samples;
+        sample = (uint8_t)(scaled + 128);
+      }
+      recording_buffer[sample_count++] = sample;
+
+      while (micros() - sample_start_microseconds < sample_interval_microseconds) {
+      }
+    }
+
+    unsigned long duration_milliseconds = millis() - record_start_milliseconds;
+    if (duration_milliseconds < minimum_recording_milliseconds) {
+      Serial.printf("[rec] too short (%lu ms), discarded\r\n", duration_milliseconds);
+      break;
+    }
+
+    char filename[40];
+    snprintf(filename, sizeof(filename), "/rec_%lu.raw", millis());
+
+    if (!ensure_littlefs_ready()) {
+      Serial.println("[rec] filesystem unavailable");
+      break;
+    }
+
+    File file = LittleFS.open(filename, FILE_WRITE);
+    if (!file) {
+      Serial.println("[rec] failed to open output file");
+      break;
+    }
+
+    size_t written = file.write(recording_buffer, sample_count);
+    file.close();
+
+    Serial.printf("[rec] saved %s (%u/%u bytes)\r\n", filename,
+                  (unsigned int)written, (unsigned int)sample_count);
+    recording_saved = written == sample_count;
+    if (recording_saved) {
+      update_file_count();
+    }
+  } while (false);
+
+  if (recording_buffer != nullptr) {
     free(recording_buffer);
-    return false;
   }
-
-  char filename[40];
-  snprintf(filename, sizeof(filename), "/rec_%lu.raw", millis());
-
-  if (!ensure_littlefs_ready()) {
-    Serial.println("[rec] filesystem unavailable");
-    free(recording_buffer);
-    return false;
-  }
-
-  File file = LittleFS.open(filename, FILE_WRITE);
-  if (!file) {
-    Serial.println("[rec] failed to open output file");
-    free(recording_buffer);
-    return false;
-  }
-
-  size_t written = file.write(recording_buffer, sample_count);
-  file.close();
-  free(recording_buffer);
-
-  Serial.printf("[rec] saved %s (%u/%u bytes)\r\n", filename,
-                (unsigned int)written, (unsigned int)sample_count);
-  update_file_count();
-  return written == sample_count;
+  set_microphone_power(false);
+  return recording_saved;
 }
 
 static void stream_current_file() {
@@ -305,6 +329,9 @@ static void init_ble() {
 void setup() {
   Serial.begin(115200);
   set_status_led_off();
+
+  pinMode(pin_mic_power, OUTPUT);
+  set_microphone_power(false);
 
   pinMode(pin_button, INPUT_PULLUP);
   analogReadResolution(12);

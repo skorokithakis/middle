@@ -32,10 +32,16 @@ A small wearable pendant with a button and microphone. Press and hold the button
 
 | MAX9814 Pin | ESP32-S3 Pin | Notes |
 |---|---|---|
-| VDD | 3.3V | |
+| VDD | Switched 3.3V (via P-MOSFET) | Mic power is gated to reduce deep-sleep current. |
 | GND | GND | |
 | OUT | GPIO4 | Any ADC-capable GPIO works |
 | GAIN | Jumper to VDD | Sets 40dB gain, appropriate for normal speech distance. 60dB (no jumper) is too hot and will clip. |
+
+**Mic power gate control:**
+
+| Control | ESP32-S3 Pin | Notes |
+|---|---|---|
+| MIC_PWR_EN (P-MOSFET gate) | GPIO8 | Active LOW. LOW powers mic during recording, HIGH cuts mic power while idle/sleep. |
 
 **Button:**
 
@@ -102,6 +108,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 
 - **Format**: 8-bit unsigned, 16kHz mono (~16KB/sec)
 - **Input**: MAX9814 analog output read via `analogRead()` on an ADC-capable GPIO
+- **Mic power control**: GPIO8 controls a high-side P-MOSFET gate (active LOW). Mic power is enabled only during recording and disabled while idle/sleep.
 - **ADC config**: 12-bit resolution, 11dB attenuation (full 0–3.3V range). The 12-bit ADC value is right-shifted to 8-bit for storage.
 - **Buffering**: Samples written to a PSRAM buffer (`ps_malloc()`) during recording. Buffer size supports up to 60 seconds (SAMPLE_RATE × 60 = ~960KB).
 - **Fallback**: If PSRAM is not available, fall back to regular RAM with a 10-second max buffer.
