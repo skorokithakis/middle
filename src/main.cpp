@@ -3,13 +3,15 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <LittleFS.h>
+#include <driver/rtc_io.h>
+#include <esp_sleep.h>
 
 static const int pin_button = 12;
 static const int pin_mic = 9;
 
 static const int sample_rate = 16000;
 static const unsigned long sample_interval_microseconds = 1000000 / sample_rate;
-static const unsigned long minimum_recording_milliseconds = 500;
+static const unsigned long minimum_recording_milliseconds = 1000;
 static const size_t maximum_recording_samples = sample_rate * 10;
 
 static const char *service_uuid = "19b10000-e8f2-537e-4f6c-d104768a1214";
@@ -34,6 +36,10 @@ static BLEAdvertising *ble_advertising = nullptr;
 
 static volatile uint8_t pending_command = 0;
 static volatile bool client_connected = false;
+static volatile uint16_t pending_recording_count = 0;
+static volatile bool sleep_requested = false;
+static bool littlefs_ready = false;
+static bool littlefs_mount_attempted = false;
 static String current_stream_path = "";
 
 static String normalize_path(const char *name) {
@@ -55,7 +61,45 @@ static void start_ble_advertising() {
   Serial.println("[ble] advertising");
 }
 
+static void configure_button_wakeup() {
+  esp_sleep_enable_ext0_wakeup((gpio_num_t)pin_button, 0);
+  rtc_gpio_pullup_en((gpio_num_t)pin_button);
+  rtc_gpio_pulldown_dis((gpio_num_t)pin_button);
+}
+
+static void enter_deep_sleep() {
+  if (ble_advertising != nullptr) {
+    ble_advertising->stop();
+  }
+  Serial.println("[power] entering deep sleep");
+  Serial.flush();
+  delay(20);
+  esp_deep_sleep_start();
+}
+
+static bool ensure_littlefs_ready() {
+  if (littlefs_ready) {
+    return true;
+  }
+  if (littlefs_mount_attempted) {
+    return false;
+  }
+
+  littlefs_mount_attempted = true;
+  littlefs_ready = LittleFS.begin(true);
+  if (littlefs_ready) {
+    Serial.println("[flash] littlefs mounted");
+  } else {
+    Serial.println("[flash] littlefs mount failed");
+  }
+  return littlefs_ready;
+}
+
 static int count_recordings() {
+  if (!ensure_littlefs_ready()) {
+    return 0;
+  }
+
   int count = 0;
   File root = LittleFS.open("/");
   File entry = root.openNextFile();
@@ -71,6 +115,10 @@ static int count_recordings() {
 }
 
 static String next_recording_path() {
+  if (!ensure_littlefs_ready()) {
+    return "";
+  }
+
   File root = LittleFS.open("/");
   File entry = root.openNextFile();
   while (entry) {
@@ -86,7 +134,10 @@ static String next_recording_path() {
 
 static void update_file_count() {
   uint16_t file_count = (uint16_t)count_recordings();
-  file_count_characteristic->setValue(file_count);
+  pending_recording_count = file_count;
+  if (file_count_characteristic != nullptr) {
+    file_count_characteristic->setValue(file_count);
+  }
   Serial.printf("[flash] pending files: %u\r\n", file_count);
 }
 
@@ -119,6 +170,13 @@ static bool record_and_save() {
 
   char filename[40];
   snprintf(filename, sizeof(filename), "/rec_%lu.raw", millis());
+
+  if (!ensure_littlefs_ready()) {
+    Serial.println("[rec] filesystem unavailable");
+    free(recording_buffer);
+    return false;
+  }
+
   File file = LittleFS.open(filename, FILE_WRITE);
   if (!file) {
     Serial.println("[rec] failed to open output file");
@@ -180,7 +238,11 @@ class server_callbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer *server) override {
     client_connected = false;
     Serial.println("[ble] client disconnected");
-    start_ble_advertising();
+    if (pending_recording_count > 0) {
+      start_ble_advertising();
+    } else {
+      sleep_requested = true;
+    }
   }
 };
 
@@ -223,7 +285,6 @@ static void init_ble() {
 
 void setup() {
   Serial.begin(115200);
-  delay(3000);
 
   pinMode(pin_button, INPUT_PULLUP);
   analogReadResolution(12);
@@ -232,15 +293,24 @@ void setup() {
   Serial.println();
   Serial.println("[boot] middle running");
 
-  if (!LittleFS.begin(true)) {
-    Serial.println("[flash] littlefs mount failed");
-  } else {
-    Serial.println("[flash] littlefs mounted");
+  configure_button_wakeup();
+  esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
+  bool woke_from_button = wakeup_cause == ESP_SLEEP_WAKEUP_EXT0 ||
+                          wakeup_cause == ESP_SLEEP_WAKEUP_EXT1;
+
+  if (!woke_from_button) {
+    Serial.println("[power] cold boot, sleeping until button press");
+    enter_deep_sleep();
+  }
+
+  if (digitalRead(pin_button) == LOW) {
+    record_and_save();
   }
 
   init_ble();
+  update_file_count();
 
-  if (count_recordings() > 0) {
+  if (pending_recording_count > 0) {
     start_ble_advertising();
   }
 }
@@ -285,6 +355,13 @@ void loop() {
     } else if (command == command_sync_done) {
       Serial.println("[ble] sync done");
     }
+  }
+
+  if (sleep_requested ||
+      (!client_connected && pending_recording_count == 0 &&
+       pending_command == 0 && button_state == HIGH)) {
+    sleep_requested = false;
+    enter_deep_sleep();
   }
 
   delay(20);

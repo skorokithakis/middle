@@ -88,8 +88,8 @@ On a 110mAh battery, standby alone lasts over a year. The active budget is rough
 
 ```
 [Deep Sleep] → button press → [Wake] → [Record to PSRAM] → button release →
-  → if duration >= 500ms: save PSRAM → flash (LittleFS)
-  → if duration < 500ms: discard (treat as sync-only tap)
+  → if duration >= 1000ms: save PSRAM → flash (LittleFS)
+  → if duration < 1000ms: discard (treat as sync-only tap)
 → [Start BLE advertising, 5 second window]
   → if phone connects: sync all pending recordings → delete synced files
   → if no connection: recordings remain on flash for next time
@@ -106,7 +106,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 - **Buffering**: Samples written to a PSRAM buffer (`ps_malloc()`) during recording. Buffer size supports up to 60 seconds (SAMPLE_RATE × 60 = ~960KB).
 - **Fallback**: If PSRAM is not available, fall back to regular RAM with a 10-second max buffer.
 - **Timing**: A microsecond-level sample interval loop (`1000000 / SAMPLE_RATE` µs per sample) ensures consistent sample rate. Recording continues while the button is held LOW.
-- **Minimum duration**: Recordings shorter than 500ms are discarded. This allows a quick tap to trigger BLE sync without creating a junk file.
+- **Minimum duration**: Recordings shorter than 1000ms are discarded. This allows a quick tap to trigger BLE sync without creating a junk file.
 
 ### Flash Storage
 
@@ -156,7 +156,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 
 ### Sync-Only Tap
 
-A short tap (< 500ms) wakes the device and activates BLE without saving a recording. This provides a manual way to force a sync of pending recordings without needing to make a new one. No special firmware logic is required — the standard flow naturally handles it since recordings under 500ms are discarded before the save step.
+A short tap (< 1000ms) wakes the device and activates BLE without saving a recording. This provides a manual way to force a sync of pending recordings without needing to make a new one. No special firmware logic is required — the standard flow naturally handles it since recordings under 1000ms are discarded before the save step.
 
 ---
 
