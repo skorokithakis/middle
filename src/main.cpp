@@ -28,6 +28,8 @@ static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
 static const int ble_chunk_size = 20;
+static const int ble_chunk_gap_milliseconds = 20;
+static const unsigned long ble_keepalive_milliseconds = 5000;
 
 static BLECharacteristic *file_count_characteristic = nullptr;
 static BLECharacteristic *file_info_characteristic = nullptr;
@@ -41,6 +43,7 @@ static volatile bool sleep_requested = false;
 static bool littlefs_ready = false;
 static bool littlefs_mount_attempted = false;
 static String current_stream_path = "";
+static unsigned long ble_active_until_milliseconds = 0;
 
 static String normalize_path(const char *name) {
   if (name == nullptr) {
@@ -51,6 +54,21 @@ static String normalize_path(const char *name) {
     return path;
   }
   return String("/") + path;
+}
+
+static void set_status_led_off() {
+#if defined(RGB_BUILTIN)
+  rgbLedWrite(RGB_BUILTIN, 0, 0, 0);
+#endif
+
+#if defined(PIN_NEOPIXEL)
+  pinMode(PIN_NEOPIXEL, OUTPUT);
+  digitalWrite(PIN_NEOPIXEL, LOW);
+#endif
+}
+
+static bool ble_window_active() {
+  return (long)(ble_active_until_milliseconds - millis()) > 0;
 }
 
 static void start_ble_advertising() {
@@ -68,6 +86,7 @@ static void configure_button_wakeup() {
 }
 
 static void enter_deep_sleep() {
+  set_status_led_off();
   if (ble_advertising != nullptr) {
     ble_advertising->stop();
   }
@@ -221,7 +240,7 @@ static void stream_current_file() {
       audio_data_characteristic->setValue(chunk, bytes_read);
       audio_data_characteristic->notify();
       chunk_count++;
-      delay(20);
+      delay(ble_chunk_gap_milliseconds);
     }
   }
   file.close();
@@ -285,6 +304,7 @@ static void init_ble() {
 
 void setup() {
   Serial.begin(115200);
+  set_status_led_off();
 
   pinMode(pin_button, INPUT_PULLUP);
   analogReadResolution(12);
@@ -310,12 +330,16 @@ void setup() {
   init_ble();
   update_file_count();
 
-  if (pending_recording_count > 0) {
+  if (woke_from_button) {
+    ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
+    start_ble_advertising();
+  } else if (pending_recording_count > 0) {
     start_ble_advertising();
   }
 }
 
 void loop() {
+  set_status_led_off();
   static int last_button_state = HIGH;
 
   int button_state = digitalRead(pin_button);
@@ -323,9 +347,11 @@ void loop() {
     last_button_state = button_state;
     Serial.printf("[button] %s\r\n", button_state == LOW ? "pressed" : "released");
     if (button_state == LOW) {
-      if (record_and_save()) {
-        start_ble_advertising();
+      bool recording_saved = record_and_save();
+      if (!recording_saved) {
+        ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
       }
+      start_ble_advertising();
     }
   }
 
@@ -359,7 +385,7 @@ void loop() {
 
   if (sleep_requested ||
       (!client_connected && pending_recording_count == 0 &&
-       pending_command == 0 && button_state == HIGH)) {
+       pending_command == 0 && button_state == HIGH && !ble_window_active())) {
     sleep_requested = false;
     enter_deep_sleep();
   }

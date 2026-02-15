@@ -123,7 +123,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 |---|---|---|---|
 | File Count | `...1214` → `0001` | Read | Number of pending recordings on flash |
 | File Info | `...1214` → `0002` | Read | Size in bytes of the current file being sent |
-| Audio Data | `...1214` → `0003` | Notify | Chunked audio data stream (500-byte chunks) |
+| Audio Data | `...1214` → `0003` | Notify | Chunked audio data stream (20-byte chunks) |
 | Command | `...1214` → `0004` | Write | Commands from the phone to the pendant |
 
 **Commands (phone → pendant):**
@@ -140,7 +140,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 2. Phone's companion app (running background BLE scan) detects the pendant.
 3. Phone connects, reads File Count characteristic.
 4. Phone writes `REQUEST_NEXT` to Command characteristic.
-5. Pendant reads the next file from flash, updates File Info with the file size, and streams the file as a series of 500-byte Notify packets on Audio Data.
+5. Pendant reads the next file from flash, updates File Info with the file size, and streams the file as a series of 20-byte Notify packets on Audio Data.
 6. Phone reassembles the file, writes `ACK_RECEIVED`.
 7. Pendant deletes the file from flash, updates File Count.
 8. Repeat from step 4 until File Count reaches 0.
@@ -152,7 +152,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 - BLE advertising window: 5 seconds (if no connection, go to sleep).
 - Sync session timeout: 30 seconds (safety net to avoid draining the battery if something hangs).
 
-**MTU**: Set to 512 for faster transfers. Each Notify chunk is 500 bytes to stay safely within MTU.
+**MTU**: Uses platform-default BLE MTU negotiation. Audio packets use 20-byte Notify chunks for reliable transfers across phone stacks.
 
 ### Sync-Only Tap
 
