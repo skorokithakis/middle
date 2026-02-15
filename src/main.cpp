@@ -81,6 +81,7 @@ static void start_ble_advertising() {
   if (ble_advertising == nullptr) {
     return;
   }
+  ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
   ble_advertising->start();
 }
 
@@ -222,6 +223,10 @@ static bool record_and_save() {
 }
 
 static void stream_current_file() {
+  if (!client_connected) {
+    return;
+  }
+
   current_stream_path = next_recording_path();
   if (current_stream_path.length() == 0) {
     return;
@@ -237,7 +242,7 @@ static void stream_current_file() {
   file_info_characteristic->setValue(file_size);
 
   uint8_t chunk[ble_chunk_size];
-  while (file.available()) {
+  while (file.available() && client_connected) {
     int bytes_read = file.read(chunk, ble_chunk_size);
     if (bytes_read > 0) {
       audio_data_characteristic->setValue(chunk, bytes_read);
@@ -255,6 +260,7 @@ class server_callbacks : public BLEServerCallbacks {
 
   void onDisconnect(BLEServer *server) override {
     client_connected = false;
+    pending_command = 0;
     if (pending_recording_count > 0) {
       start_ble_advertising();
     } else {
@@ -326,7 +332,6 @@ void setup() {
   update_file_count();
 
   if (woke_from_button) {
-    ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
     start_ble_advertising();
   } else if (pending_recording_count > 0) {
     start_ble_advertising();
@@ -341,10 +346,7 @@ void loop() {
   if (button_state != last_button_state) {
     last_button_state = button_state;
     if (button_state == LOW) {
-      bool recording_saved = record_and_save();
-      if (!recording_saved) {
-        ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
-      }
+      record_and_save();
       start_ble_advertising();
     }
   }
@@ -372,8 +374,8 @@ void loop() {
   }
 
   if (sleep_requested ||
-      (!client_connected && pending_recording_count == 0 &&
-       pending_command == 0 && button_state == HIGH && !ble_window_active())) {
+      (!client_connected && pending_command == 0 && button_state == HIGH &&
+       !ble_window_active())) {
     sleep_requested = false;
     enter_deep_sleep();
   }

@@ -24,6 +24,7 @@ from datetime import datetime
 from pathlib import Path
 
 from bleak import BleakClient, BleakScanner
+from bleak.exc import BleakError
 import lameenc
 from openai import AuthenticationError, OpenAI, OpenAIError
 from tqdm import tqdm
@@ -292,10 +293,20 @@ async def main() -> None:
         log(f"Found pendant: {device.name} ({device.address}).")
         log("Connecting...")
 
-        async with BleakClient(device, timeout=10) as client:
-            log(f"Connected (MTU: {client.mtu_size}).")
-            synced, saved_recordings = await sync_recordings(client)
-            log(f"Sync complete, {synced} file(s) transferred.")
+        saved_recordings: list[Path] = []
+        try:
+            async with BleakClient(device, timeout=10) as client:
+                log(f"Connected (MTU: {client.mtu_size}).")
+                synced, saved_recordings = await sync_recordings(client)
+                log(f"Sync complete, {synced} file(s) transferred.")
+        except TimeoutError:
+            log("Connection attempt timed out. Pendant likely returned to sleep.")
+            log("Resuming scan.")
+            continue
+        except BleakError as error:
+            log(f"BLE connection failed: {error}")
+            log("Resuming scan.")
+            continue
 
         if len(saved_recordings) > 0:
             openai_client = create_openai_client()
