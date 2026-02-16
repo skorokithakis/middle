@@ -80,7 +80,7 @@ An LM393-based "sound sensor" module outputs only a digital HIGH/LOW when sound 
 | State | Current Draw | Duration | Notes |
 |---|---|---|---|
 | Deep sleep | ~7µA | 99.9% of time | ESP32-S3 with ext_wakeup configured |
-| Recording (ADC + PSRAM) | ~50mA | Seconds (length of speech) | ADC sampling + PSRAM writes |
+| Recording (ADC + flash write) | ~50mA | Seconds (length of speech) | ADC sampling + ADPCM encode + LittleFS writes |
 | BLE advertising | ~80–100mA | ~5 seconds after recording | Advertising and optional data transfer |
 | BLE transfer | ~80–100mA | Seconds (depends on file count/size) | Only if phone connects |
 
@@ -93,8 +93,8 @@ On a 110mAh battery, standby alone lasts over a year. The active budget is rough
 ### Device Lifecycle
 
 ```
-[Deep Sleep] → button press → [Wake] → [Record to PSRAM] → button release →
-  → if duration >= 1000ms: save PSRAM → flash (LittleFS)
+[Deep Sleep] → button press → [Wake] → [Record ADPCM to flash] → button release →
+  → if duration >= 1000ms: recording kept on flash (LittleFS)
   → if duration < 1000ms: discard (treat as sync-only tap)
 → [Start BLE advertising, 5 second window]
   → if phone connects: sync all pending recordings → delete synced files
@@ -106,20 +106,20 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 
 ### Audio Recording
 
-- **Format**: 8-bit unsigned, 16kHz mono (~16KB/sec)
-- **Input**: MAX9814 analog output read via `analogRead()` on an ADC-capable GPIO
+- **Format**: IMA ADPCM, 16kHz mono (~4KB/sec). Samples are captured as 8-bit unsigned PCM from the ADC, converted to signed 16-bit, then compressed to 4-bit ADPCM nibbles (two samples per byte). Files have a 4-byte little-endian uint32 header containing the sample count, followed by packed ADPCM data.
+- **Input**: MAX9814 analog output read via `analogRead()` on an ADC-capable GPIO.
 - **Mic power control**: GPIO8 controls a high-side P-MOSFET gate (active LOW). Mic power is enabled only during recording and disabled while idle/sleep.
-- **ADC config**: 12-bit resolution, 11dB attenuation (full 0–3.3V range). The 12-bit ADC value is right-shifted to 8-bit for storage.
-- **Buffering**: Samples written to a PSRAM buffer (`ps_malloc()`) during recording. Buffer size supports up to 60 seconds (SAMPLE_RATE × 60 = ~960KB).
-- **Fallback**: If PSRAM is not available, fall back to regular RAM with a 10-second max buffer.
+- **ADC config**: 12-bit resolution, 11dB attenuation (full 0–3.3V range). The 12-bit ADC value is right-shifted to 8-bit before conversion to 16-bit for ADPCM encoding.
+- **Streaming to flash**: ADPCM output is written through a 4KB ring buffer that absorbs LittleFS write latency spikes (flash page erases can stall for milliseconds). The ring buffer flushes to the open file whenever it reaches half capacity. No large malloc is needed — total RAM usage for recording is ~4KB regardless of recording length.
+- **Recording length**: Limited only by free flash space (~3MB = ~12 minutes of ADPCM audio). There is no fixed time limit.
 - **Timing**: A microsecond-level sample interval loop (`1000000 / SAMPLE_RATE` µs per sample) ensures consistent sample rate. Recording continues while the button is held LOW.
 - **Minimum duration**: Recordings shorter than 1000ms are discarded. This allows a quick tap to trigger BLE sync without creating a junk file.
 
 ### Flash Storage
 
 - **Filesystem**: LittleFS on the ESP32's internal flash.
-- **File naming**: `rec_<millis>_<counter>.raw` — unique per recording.
-- **Capacity**: ~3MB usable flash = ~3 minutes of 8-bit 16kHz audio. Plenty of buffer for periods away from the phone.
+- **File naming**: `rec_<millis>.ima` — unique per recording.
+- **Capacity**: ~3MB usable flash = ~12 minutes of IMA ADPCM audio at ~4KB/sec. Plenty of buffer for periods away from the phone.
 - **Lifecycle**: Files are created after recording, persist through deep sleep cycles, and are deleted only after the phone explicitly acknowledges receipt.
 
 ### BLE Protocol
@@ -181,7 +181,7 @@ The app needs to:
 4. Save recordings locally or integrate with a notes/reminder app.
 5. Optionally run speech-to-text (on-device or via API) to transcribe recordings.
 
-**Audio playback**: The raw files are 8-bit unsigned 16kHz mono PCM. To play them in a browser, they need to be loaded into an AudioBuffer at the correct sample rate. No container format or headers — just raw samples.
+**Audio playback**: The files are IMA ADPCM encoded (4-byte sample count header + packed nibbles). The sync client decodes ADPCM to signed 16-bit PCM and encodes to MP3 for storage and playback.
 
 ---
 
@@ -200,7 +200,7 @@ The app needs to:
 
 ## Future Considerations
 
-- **Audio compression**: ADPCM or Opus encoding on the ESP32 before saving to flash would roughly halve file sizes and BLE transfer times. Adds firmware complexity.
+- **Better audio compression**: Opus or codec2 would compress further than ADPCM but at significant CPU cost on the ESP32-S3 (no FPU).
 - **I2S mic upgrade**: Swapping the MAX9814 for an INMP441 would give cleaner, lower-noise audio. Requires 5 wires instead of 3 and I2S driver code instead of ADC reads.
 - **Haptic feedback**: A small LRA vibration motor (e.g. LRA 0825, 8×2.5mm) could provide tactile confirmation that recording has started/stopped.
 - **Ring form factor**: The original Pebble Index 01 concept was a ring. A pendant is the practical first iteration; a ring would require a custom PCB and significantly smaller components.

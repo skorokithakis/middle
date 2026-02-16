@@ -40,8 +40,9 @@ COMMAND_ACK_RECEIVED = bytes([0x02])
 COMMAND_SYNC_DONE = bytes([0x03])
 
 SAMPLE_RATE = 16000
-BITS_PER_SAMPLE = 8
 NUMBER_OF_CHANNELS = 1
+# File header is a 4-byte little-endian uint32 sample count.
+IMA_HEADER_SIZE = 4
 MP3_BIT_RATE_KILOBITS_PER_SECOND = 64
 TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 OPENAI_API_KEY_ENV_NAME = "OPENAI_API_KEY"
@@ -59,21 +60,72 @@ def log(message: str) -> None:
     print(f"[{timestamp}] {message}")
 
 
-def unsigned_pcm8_to_signed_pcm16le(pcm8: bytes) -> bytes:
-    """Convert unsigned 8-bit PCM to signed 16-bit little-endian PCM."""
-    pcm16 = bytearray(len(pcm8) * 2)
-    write_index = 0
-    for sample in pcm8:
-        signed_sample = (sample - 128) << 8
-        pcm16[write_index] = signed_sample & 0xFF
-        pcm16[write_index + 1] = (signed_sample >> 8) & 0xFF
-        write_index += 2
-    return bytes(pcm16)
+ADPCM_STEP_TABLE = [
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37,
+    41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173,
+    190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658,
+    724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066,
+    2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484,
+    7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
+    20350, 22385, 24623, 27086, 29794, 32767,
+]
+
+ADPCM_INDEX_TABLE = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8]
 
 
-def encode_mp3_from_pcm8(pcm8: bytes) -> bytes:
-    """Encode 8-bit unsigned mono PCM (16kHz) to MP3 bytes."""
-    pcm16 = unsigned_pcm8_to_signed_pcm16le(pcm8)
+def decode_ima_adpcm(data: bytes, sample_count: int) -> bytes:
+    """Decode IMA ADPCM packed nibbles to signed 16-bit little-endian PCM.
+
+    Each byte contains two nibbles (low nibble first). The decoder mirrors
+    the encoder in the firmware exactly.
+    """
+    predicted_sample = 0
+    step_index = 0
+    output = bytearray(sample_count * 2)
+    write_position = 0
+
+    for i in range(sample_count):
+        byte_index = i // 2
+        if byte_index >= len(data):
+            break
+
+        if i % 2 == 0:
+            nibble = data[byte_index] & 0x0F
+        else:
+            nibble = (data[byte_index] >> 4) & 0x0F
+
+        step = ADPCM_STEP_TABLE[step_index]
+        delta = step >> 3
+        if nibble & 4:
+            delta += step
+        if nibble & 2:
+            delta += step >> 1
+        if nibble & 1:
+            delta += step >> 2
+
+        if nibble & 8:
+            predicted_sample -= delta
+        else:
+            predicted_sample += delta
+
+        predicted_sample = max(-32768, min(32767, predicted_sample))
+
+        sample_le = predicted_sample & 0xFFFF
+        output[write_position] = sample_le & 0xFF
+        output[write_position + 1] = (sample_le >> 8) & 0xFF
+        write_position += 2
+
+        step_index += ADPCM_INDEX_TABLE[nibble]
+        step_index = max(0, min(88, step_index))
+
+    return bytes(output[:write_position])
+
+
+def encode_mp3_from_ima(ima_data: bytes) -> bytes:
+    """Decode an IMA ADPCM file (with 4-byte sample count header) to MP3."""
+    sample_count = struct.unpack("<I", ima_data[:IMA_HEADER_SIZE])[0]
+    adpcm_payload = ima_data[IMA_HEADER_SIZE:]
+    pcm16 = decode_ima_adpcm(adpcm_payload, sample_count)
 
     encoder = lameenc.Encoder()
     encoder.set_bit_rate(MP3_BIT_RATE_KILOBITS_PER_SECOND)
@@ -185,7 +237,13 @@ async def sync_recordings(
                 await asyncio.sleep(0.1)
                 raw = await client.read_gatt_char(CHARACTERISTIC_FILE_INFO_UUID)
                 expected_size = struct.unpack("<I", raw)[0]
-                duration_seconds = expected_size / SAMPLE_RATE
+                # The file contains a 4-byte header plus ADPCM nibbles, so
+                # we can't directly divide by sample rate for duration.
+                # We'll compute it after decoding. Show raw size for now.
+                adpcm_sample_count = 0
+                if expected_size >= IMA_HEADER_SIZE:
+                    adpcm_sample_count = (expected_size - IMA_HEADER_SIZE) * 2
+                duration_seconds = adpcm_sample_count / SAMPLE_RATE
                 log(
                     f"File size: {expected_size} bytes "
                     f"({duration_seconds:.1f}s of audio)."
@@ -247,11 +305,11 @@ async def sync_recordings(
         filename = f"recording_{timestamp}_{i}.mp3"
         filepath = RECORDINGS_DIRECTORY / filename
 
-        mp3_data = encode_mp3_from_pcm8(audio_data)
+        mp3_data = encode_mp3_from_ima(audio_data)
         filepath.write_bytes(mp3_data)
         log(
             f"Saved {filepath} (MP3 {len(mp3_data)} bytes from "
-            f"PCM {len(audio_data)} bytes)."
+            f"IMA ADPCM {len(audio_data)} bytes)."
         )
         saved_recordings.append(filepath)
 

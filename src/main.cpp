@@ -19,8 +19,137 @@ static const int pin_mic_power = 8;
 static const int sample_rate = 16000;
 static const unsigned long sample_interval_microseconds = 1000000 / sample_rate;
 static const unsigned long minimum_recording_milliseconds = 1000;
-static const size_t maximum_recording_samples = sample_rate * 10;
 static const size_t microphone_startup_fade_samples = sample_rate / 200;
+
+// IMA ADPCM step size table — indexed by step_index (0..88).
+static const int16_t adpcm_step_table[89] = {
+    7,     8,     9,     10,    11,    12,    13,    14,    16,    17,
+    19,    21,    23,    25,    28,    31,    34,    37,    41,    45,
+    50,    55,    60,    66,    73,    80,    88,    97,    107,   118,
+    130,   143,   157,   173,   190,   209,   230,   253,   279,   307,
+    337,   371,   408,   449,   494,   544,   598,   658,   724,   796,
+    876,   963,   1060,  1166,  1282,  1411,  1552,  1707,  1878,  2066,
+    2272,  2499,  2749,  3024,  3327,  3660,  4026,  4428,  4871,  5358,
+    5894,  6484,  7132,  7845,  8630,  9493,  10442, 11487, 12635, 13899,
+    15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767};
+
+// Maps each encoded nibble to a step_index adjustment.
+static const int8_t adpcm_index_table[16] = {-1, -1, -1, -1, 2, 4, 6, 8,
+                                              -1, -1, -1, -1, 2, 4, 6, 8};
+
+struct adpcm_state {
+  int16_t predicted_sample;
+  uint8_t step_index;
+};
+
+// Encode one 16-bit signed PCM sample into a 4-bit IMA ADPCM nibble.
+static uint8_t adpcm_encode_sample(int16_t sample, adpcm_state &state) {
+  int32_t difference = sample - state.predicted_sample;
+  uint8_t nibble = 0;
+  if (difference < 0) {
+    nibble = 8;
+    difference = -difference;
+  }
+
+  int16_t step = adpcm_step_table[state.step_index];
+  // Quantize the difference against the current step size. Each bit in the
+  // nibble represents whether the difference exceeds successively halved
+  // fractions of the step.
+  int32_t delta = step >> 3;
+  if (difference >= step) {
+    nibble |= 4;
+    difference -= step;
+    delta += step;
+  }
+  step >>= 1;
+  if (difference >= step) {
+    nibble |= 2;
+    difference -= step;
+    delta += step;
+  }
+  step >>= 1;
+  if (difference >= step) {
+    nibble |= 1;
+    delta += step;
+  }
+
+  // Apply the reconstructed delta so the decoder stays in sync with us.
+  if (nibble & 8) {
+    state.predicted_sample -= delta;
+  } else {
+    state.predicted_sample += delta;
+  }
+  if (state.predicted_sample > 32767) {
+    state.predicted_sample = 32767;
+  } else if (state.predicted_sample < -32768) {
+    state.predicted_sample = -32768;
+  }
+
+  int new_index = state.step_index + adpcm_index_table[nibble];
+  if (new_index < 0) {
+    new_index = 0;
+  } else if (new_index > 88) {
+    new_index = 88;
+  }
+  state.step_index = (uint8_t)new_index;
+
+  return nibble;
+}
+
+// Ring buffer for draining ADPCM output to LittleFS. Sized to absorb
+// worst-case flash write stalls (~10ms at 4 KB/s = ~40 bytes, but we use
+// 4 KB for generous headroom).
+static const size_t ring_buffer_capacity = 4096;
+static uint8_t ring_buffer[ring_buffer_capacity];
+static size_t ring_buffer_head = 0;
+static size_t ring_buffer_count = 0;
+
+static void ring_buffer_reset() {
+  ring_buffer_head = 0;
+  ring_buffer_count = 0;
+}
+
+static void ring_buffer_push(uint8_t byte) {
+  size_t write_position = (ring_buffer_head + ring_buffer_count) % ring_buffer_capacity;
+  ring_buffer[write_position] = byte;
+  if (ring_buffer_count < ring_buffer_capacity) {
+    ring_buffer_count++;
+  } else {
+    // Overflow — oldest byte is lost. This shouldn't happen with proper
+    // flush cadence, but we advance head to keep the buffer consistent.
+    ring_buffer_head = (ring_buffer_head + 1) % ring_buffer_capacity;
+  }
+}
+
+// Flush up to `max_bytes` from the ring buffer to the open file. Returns
+// the number of bytes written, or -1 on write error.
+static int ring_buffer_flush(File &file, size_t max_bytes) {
+  size_t to_write = ring_buffer_count;
+  if (to_write > max_bytes) {
+    to_write = max_bytes;
+  }
+  if (to_write == 0) {
+    return 0;
+  }
+
+  size_t total_written = 0;
+  while (to_write > 0) {
+    // Write in contiguous chunks to avoid byte-at-a-time overhead.
+    size_t contiguous = ring_buffer_capacity - ring_buffer_head;
+    if (contiguous > to_write) {
+      contiguous = to_write;
+    }
+    size_t written = file.write(&ring_buffer[ring_buffer_head], contiguous);
+    if (written != contiguous) {
+      return -1;
+    }
+    ring_buffer_head = (ring_buffer_head + written) % ring_buffer_capacity;
+    ring_buffer_count -= written;
+    to_write -= written;
+    total_written += written;
+  }
+  return (int)total_written;
+}
 
 static const char *service_uuid = "19b10000-e8f2-537e-4f6c-d104768a1214";
 static const char *characteristic_file_count_uuid =
@@ -130,7 +259,8 @@ static int count_recordings() {
   while (entry) {
     String name = String(entry.name());
     if (!entry.isDirectory() &&
-        (name.startsWith("rec_") || name.startsWith("/rec_"))) {
+        (name.startsWith("rec_") || name.startsWith("/rec_")) &&
+        (name.endsWith(".ima") || name.endsWith(".raw"))) {
       count++;
     }
     entry = root.openNextFile();
@@ -148,7 +278,8 @@ static String next_recording_path() {
   while (entry) {
     String name = String(entry.name());
     if (!entry.isDirectory() &&
-        (name.startsWith("rec_") || name.startsWith("/rec_"))) {
+        (name.startsWith("rec_") || name.startsWith("/rec_")) &&
+        (name.endsWith(".ima") || name.endsWith(".raw"))) {
       return normalize_path(entry.name());
     }
     entry = root.openNextFile();
@@ -167,62 +298,103 @@ static void update_file_count() {
 static bool record_and_save() {
   set_microphone_power(true);
   bool recording_saved = false;
-  uint8_t *recording_buffer = nullptr;
 
   do {
-    recording_buffer = (uint8_t *)malloc(maximum_recording_samples);
-    if (!recording_buffer) {
-      break;
-    }
-
-    unsigned long record_start_milliseconds = millis();
-    size_t sample_count = 0;
-
-    while (digitalRead(pin_button) == LOW && sample_count < maximum_recording_samples) {
-      unsigned long sample_start_microseconds = micros();
-      uint16_t raw = analogRead(pin_mic);
-      uint8_t sample = (uint8_t)(raw >> 4);
-      if (sample_count < microphone_startup_fade_samples) {
-        int16_t centered = (int16_t)sample - 128;
-        int32_t scaled = (int32_t)centered * (int32_t)(sample_count + 1) /
-                         (int32_t)microphone_startup_fade_samples;
-        sample = (uint8_t)(scaled + 128);
-      }
-      recording_buffer[sample_count++] = sample;
-
-      while (micros() - sample_start_microseconds < sample_interval_microseconds) {
-      }
-    }
-
-    unsigned long duration_milliseconds = millis() - record_start_milliseconds;
-    if (duration_milliseconds < minimum_recording_milliseconds) {
+    if (!ensure_littlefs_ready()) {
       break;
     }
 
     char filename[40];
-    snprintf(filename, sizeof(filename), "/rec_%lu.raw", millis());
-
-    if (!ensure_littlefs_ready()) {
-      break;
-    }
+    snprintf(filename, sizeof(filename), "/rec_%lu.ima", millis());
 
     File file = LittleFS.open(filename, FILE_WRITE);
     if (!file) {
       break;
     }
 
-    size_t written = file.write(recording_buffer, sample_count);
+    // Reserve space for the sample count header — we'll fill it in after
+    // recording finishes, once we know the actual count.
+    uint32_t placeholder = 0;
+    file.write((uint8_t *)&placeholder, sizeof(placeholder));
+
+    ring_buffer_reset();
+    adpcm_state encoder_state = {0, 0};
+
+    unsigned long record_start_milliseconds = millis();
+    uint32_t sample_count = 0;
+    bool write_error = false;
+    // Tracks whether we're holding an incomplete byte (the low nibble has
+    // been written but the high nibble hasn't arrived yet).
+    bool nibble_pending = false;
+    uint8_t packed_byte = 0;
+
+    while (digitalRead(pin_button) == LOW && !write_error) {
+      unsigned long sample_start_microseconds = micros();
+      uint16_t raw = analogRead(pin_mic);
+      uint8_t sample = (uint8_t)(raw >> 4);
+
+      if (sample_count < microphone_startup_fade_samples) {
+        int16_t centered = (int16_t)sample - 128;
+        int32_t scaled = (int32_t)centered * (int32_t)(sample_count + 1) /
+                         (int32_t)microphone_startup_fade_samples;
+        sample = (uint8_t)(scaled + 128);
+      }
+
+      // Convert unsigned 8-bit to signed 16-bit for the ADPCM encoder.
+      int16_t sample_16 = ((int16_t)sample - 128) << 8;
+      uint8_t nibble = adpcm_encode_sample(sample_16, encoder_state);
+      sample_count++;
+
+      // Pack two nibbles per byte, low nibble first.
+      if (!nibble_pending) {
+        packed_byte = nibble & 0x0F;
+        nibble_pending = true;
+      } else {
+        packed_byte |= (nibble << 4);
+        ring_buffer_push(packed_byte);
+        nibble_pending = false;
+      }
+
+      // Flush when the ring buffer is half full to keep headroom for flash
+      // write stalls.
+      if (ring_buffer_count >= ring_buffer_capacity / 2) {
+        if (ring_buffer_flush(file, ring_buffer_count) < 0) {
+          write_error = true;
+        }
+      }
+
+      while (micros() - sample_start_microseconds < sample_interval_microseconds) {
+      }
+    }
+
+    // Flush the trailing nibble if the sample count was odd.
+    if (nibble_pending) {
+      ring_buffer_push(packed_byte);
+    }
+
+    // Drain any remaining data.
+    if (!write_error && ring_buffer_count > 0) {
+      if (ring_buffer_flush(file, ring_buffer_count) < 0) {
+        write_error = true;
+      }
+    }
+
+    unsigned long duration_milliseconds = millis() - record_start_milliseconds;
+    if (duration_milliseconds < minimum_recording_milliseconds || write_error) {
+      file.close();
+      LittleFS.remove(filename);
+      break;
+    }
+
+    // Seek back and write the actual sample count into the header.
+    file.seek(0);
+    file.write((uint8_t *)&sample_count, sizeof(sample_count));
     file.close();
 
-    recording_saved = written == sample_count;
-    if (recording_saved) {
-      update_file_count();
-    }
+    recording_saved = true;
+    update_file_count();
   } while (false);
 
-  if (recording_buffer != nullptr) {
-    free(recording_buffer);
-  }
   set_microphone_power(false);
   return recording_saved;
 }
