@@ -30,7 +30,6 @@ static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
 static const int ble_chunk_size = 20;
-static const int ble_chunk_gap_milliseconds = 20;
 static const unsigned long ble_keepalive_milliseconds = 5000;
 
 static BLECharacteristic *file_count_characteristic = nullptr;
@@ -247,7 +246,6 @@ static void stream_current_file() {
     if (bytes_read > 0) {
       audio_data_characteristic->setValue(chunk, bytes_read);
       audio_data_characteristic->notify();
-      delay(ble_chunk_gap_milliseconds);
     }
   }
   file.close();
