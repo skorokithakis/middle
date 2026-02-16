@@ -115,7 +115,10 @@ def transcribe_mp3_file(openai_client: OpenAI, filepath: Path) -> Path:
     return transcript_path
 
 
-async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
+async def sync_recordings(
+    client: BleakClient,
+    openai_client: OpenAI | None,
+) -> tuple[int, list[Path]]:
     """Download all pending recordings from the pendant. Returns the number
     of files synced."""
     raw = await client.read_gatt_char(CHARACTERISTIC_FILE_COUNT_UUID)
@@ -128,6 +131,8 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
     RECORDINGS_DIRECTORY.mkdir(parents=True, exist_ok=True)
     synced = 0
     saved_recordings: list[Path] = []
+
+    skip_transcription = False
 
     for i in range(file_count):
         log(f"Requesting file {i + 1}/{file_count}...")
@@ -261,6 +266,20 @@ async def sync_recordings(client: BleakClient) -> tuple[int, list[Path]]:
             return synced, saved_recordings
         synced += 1
 
+        if openai_client is None or skip_transcription:
+            continue
+
+        log(f"Transcribing {filepath.name} with {TRANSCRIPTION_MODEL}...")
+        try:
+            transcript_path = transcribe_mp3_file(openai_client, filepath)
+            log(f"Saved transcript: {transcript_path}")
+        except AuthenticationError:
+            log("Skipping remaining transcriptions: invalid API key.")
+            skip_transcription = True
+        except OpenAIError as error:
+            log(f"Transcription failed for {filepath.name}: {error}")
+            skip_transcription = True
+
     log("Sending SYNC_DONE command.")
     try:
         await client.write_gatt_char(
@@ -294,10 +313,14 @@ async def main() -> None:
         log("Connecting...")
 
         saved_recordings: list[Path] = []
+        openai_client = create_openai_client()
         try:
             async with BleakClient(device, timeout=10) as client:
                 log(f"Connected (MTU: {client.mtu_size}).")
-                synced, saved_recordings = await sync_recordings(client)
+                synced, saved_recordings = await sync_recordings(
+                    client,
+                    openai_client,
+                )
                 log(f"Sync complete, {synced} file(s) transferred.")
         except TimeoutError:
             log("Connection attempt timed out. Pendant likely returned to sleep.")
@@ -307,24 +330,6 @@ async def main() -> None:
             log(f"BLE connection failed: {error}")
             log("Resuming scan.")
             continue
-
-        if len(saved_recordings) > 0:
-            openai_client = create_openai_client()
-            if openai_client is not None:
-                log(
-                    f"Transcribing {len(saved_recordings)} recording(s) "
-                    f"with {TRANSCRIPTION_MODEL}..."
-                )
-                for filepath in tqdm(saved_recordings, desc="Transcribing", unit="file"):
-                    try:
-                        transcript_path = transcribe_mp3_file(openai_client, filepath)
-                        log(f"Saved transcript: {transcript_path}")
-                    except AuthenticationError:
-                        log("Skipping remaining transcriptions: invalid API key.")
-                        break
-                    except OpenAIError as error:
-                        log(f"Transcription failed for {filepath.name}: {error}")
-                        break
 
         log("Disconnected, resuming scan.\n")
         scan_count = 0
