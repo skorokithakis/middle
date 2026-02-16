@@ -296,7 +296,6 @@ static void update_file_count() {
 }
 
 static bool record_and_save() {
-  set_microphone_power(true);
   bool recording_saved = false;
 
   do {
@@ -395,7 +394,6 @@ static bool record_and_save() {
     update_file_count();
   } while (false);
 
-  set_microphone_power(false);
   return recording_saved;
 }
 
@@ -523,10 +521,10 @@ static void init_ble() {
 }
 
 void setup() {
-  set_status_led_off();
-
   pinMode(pin_mic_power, OUTPUT);
-  set_microphone_power(false);
+  set_microphone_power(true);
+
+  set_status_led_off();
 
   pinMode(pin_button, INPUT_PULLUP);
   analogReadResolution(12);
