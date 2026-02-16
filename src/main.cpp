@@ -251,6 +251,50 @@ static bool ensure_littlefs_ready() {
   return littlefs_ready;
 }
 
+// Extracts the numeric ID from a recording filename like "rec_000012.ima".
+// Returns -1 if the name doesn't match the expected pattern.
+static long parse_recording_id(const String &name) {
+  String stripped = name;
+  if (stripped.startsWith("/")) {
+    stripped = stripped.substring(1);
+  }
+  if (!stripped.startsWith("rec_")) {
+    return -1;
+  }
+  int dot = stripped.indexOf('.');
+  if (dot < 0) {
+    return -1;
+  }
+  String suffix = stripped.substring(dot);
+  if (suffix != ".ima" && suffix != ".raw") {
+    return -1;
+  }
+  String id_str = stripped.substring(4, dot);
+  if (id_str.length() == 0) {
+    return -1;
+  }
+  return id_str.toInt();
+}
+
+// Returns the next available recording ID by scanning existing filenames.
+static long next_recording_id() {
+  if (!ensure_littlefs_ready()) {
+    return 1;
+  }
+
+  long max_id = 0;
+  File root = LittleFS.open("/");
+  File entry = root.openNextFile();
+  while (entry) {
+    long id = parse_recording_id(String(entry.name()));
+    if (id > max_id) {
+      max_id = id;
+    }
+    entry = root.openNextFile();
+  }
+  return max_id + 1;
+}
+
 static int count_recordings() {
   if (!ensure_littlefs_ready()) {
     return 0;
@@ -260,10 +304,7 @@ static int count_recordings() {
   File root = LittleFS.open("/");
   File entry = root.openNextFile();
   while (entry) {
-    String name = String(entry.name());
-    if (!entry.isDirectory() &&
-        (name.startsWith("rec_") || name.startsWith("/rec_")) &&
-        (name.endsWith(".ima") || name.endsWith(".raw"))) {
+    if (parse_recording_id(String(entry.name())) >= 0) {
       count++;
     }
     entry = root.openNextFile();
@@ -271,23 +312,27 @@ static int count_recordings() {
   return count;
 }
 
+// Returns the path of the oldest recording (lowest numeric ID).
 static String next_recording_path() {
   if (!ensure_littlefs_ready()) {
     return "";
   }
 
+  long lowest_id = -1;
+  String lowest_path = "";
+
   File root = LittleFS.open("/");
   File entry = root.openNextFile();
   while (entry) {
     String name = String(entry.name());
-    if (!entry.isDirectory() &&
-        (name.startsWith("rec_") || name.startsWith("/rec_")) &&
-        (name.endsWith(".ima") || name.endsWith(".raw"))) {
-      return normalize_path(entry.name());
+    long id = parse_recording_id(name);
+    if (id >= 0 && (lowest_id < 0 || id < lowest_id)) {
+      lowest_id = id;
+      lowest_path = normalize_path(entry.name());
     }
     entry = root.openNextFile();
   }
-  return "";
+  return lowest_path;
 }
 
 static void update_file_count() {
@@ -308,7 +353,7 @@ static bool record_and_save() {
     }
 
     char filename[40];
-    snprintf(filename, sizeof(filename), "/rec_%lu.ima", millis());
+    snprintf(filename, sizeof(filename), "/rec_%06ld.ima", next_recording_id());
 
     File file = LittleFS.open(filename, FILE_WRITE);
     if (!file) {
