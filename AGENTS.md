@@ -95,6 +95,7 @@
 - Python: follow PEP 8 style and keep line lengths readable.
 - C++: keep brace and spacing style consistent with `src/main.cpp`.
 - Keep logs concise and prefixed by subsystem tags already in use (for example `[ble]`, `[rec]`, `[flash]`).
+- Serial output must use `\r\n` line endings (e.g. `Serial.printf("...\r\n")` and `Serial.println()` — note that `println` already appends `\r\n`).
 
 ## error handling
 - Do not silently swallow errors.

@@ -164,7 +164,7 @@ static const char *characteristic_command_uuid =
 static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
-static const unsigned long ble_keepalive_milliseconds = 5000;
+static const unsigned long ble_keepalive_milliseconds = 7000;
 
 static BLEServer *ble_server = nullptr;
 static BLECharacteristic *file_count_characteristic = nullptr;
@@ -244,7 +244,10 @@ static bool ensure_littlefs_ready() {
   }
 
   littlefs_mount_attempted = true;
-  littlefs_ready = LittleFS.begin(true);
+  littlefs_ready = LittleFS.begin(false);
+  if (!littlefs_ready) {
+    littlefs_ready = LittleFS.begin(true);
+  }
   return littlefs_ready;
 }
 
@@ -296,6 +299,7 @@ static void update_file_count() {
 }
 
 static bool record_and_save() {
+  set_microphone_power(true);
   bool recording_saved = false;
 
   do {
@@ -394,6 +398,7 @@ static bool record_and_save() {
     update_file_count();
   } while (false);
 
+  set_microphone_power(false);
   return recording_saved;
 }
 
@@ -520,6 +525,19 @@ static void init_ble() {
   ble_advertising->setScanResponse(true);
 }
 
+static bool ble_initialized = false;
+
+static void start_ble_if_needed() {
+  update_file_count();
+  if (pending_recording_count > 0) {
+    if (!ble_initialized) {
+      init_ble();
+      ble_initialized = true;
+    }
+    start_ble_advertising();
+  }
+}
+
 void setup() {
   pinMode(pin_mic_power, OUTPUT);
   set_microphone_power(true);
@@ -527,42 +545,39 @@ void setup() {
   set_status_led_off();
 
   pinMode(pin_button, INPUT_PULLUP);
-  analogReadResolution(12);
-  analogSetAttenuation(ADC_11db);
 
   configure_button_wakeup();
   esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
-  bool woke_from_button = wakeup_cause == ESP_SLEEP_WAKEUP_EXT0 ||
-                          wakeup_cause == ESP_SLEEP_WAKEUP_EXT1;
 
-  if (!woke_from_button) {
+  if (wakeup_cause != ESP_SLEEP_WAKEUP_EXT0 &&
+      wakeup_cause != ESP_SLEEP_WAKEUP_EXT1) {
     enter_deep_sleep();
   }
 
-  if (digitalRead(pin_button) == LOW) {
+  int button = digitalRead(pin_button);
+  if (button == LOW) {
     record_and_save();
-  }
-
-  init_ble();
-  update_file_count();
-
-  if (woke_from_button) {
-    start_ble_advertising();
-  } else if (pending_recording_count > 0) {
-    start_ble_advertising();
   }
 }
 
 void loop() {
   set_status_led_off();
   static int last_button_state = HIGH;
+  static bool initial_ble_check_done = false;
+
+  // After the first recording in setup(), we enter loop with the button
+  // already released. Check once whether there are files to sync.
+  if (!initial_ble_check_done) {
+    initial_ble_check_done = true;
+    start_ble_if_needed();
+  }
 
   int button_state = digitalRead(pin_button);
   if (button_state != last_button_state) {
     last_button_state = button_state;
     if (button_state == LOW) {
       record_and_save();
-      start_ble_advertising();
+      start_ble_if_needed();
     }
   }
 
