@@ -5,6 +5,12 @@
 #include <LittleFS.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+// NimBLE API for direct notification calls with congestion retry. The Arduino
+// BLE wrapper calls ble_gatts_notify_custom but silently aborts on non-zero
+// return (e.g. BLE_HS_ENOMEM when the mbuf pool is exhausted). We call it
+// ourselves so we can retry instead of losing data.
+#include <host/ble_gatt.h>
+#include <host/ble_hs_mbuf.h>
 
 static const int pin_button = 12;
 static const int pin_mic = 9;
@@ -29,9 +35,9 @@ static const char *characteristic_command_uuid =
 static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
-static const int ble_chunk_size = 20;
 static const unsigned long ble_keepalive_milliseconds = 5000;
 
+static BLEServer *ble_server = nullptr;
 static BLECharacteristic *file_count_characteristic = nullptr;
 static BLECharacteristic *file_info_characteristic = nullptr;
 static BLECharacteristic *audio_data_characteristic = nullptr;
@@ -221,8 +227,35 @@ static bool record_and_save() {
   return recording_saved;
 }
 
+// Send a BLE notification via NimBLE's ble_gatts_notify_custom(), retrying
+// when the call fails due to mbuf pool exhaustion (BLE_HS_ENOMEM) or other
+// transient congestion. The Arduino BLE wrapper also calls this function
+// internally, but on any non-zero return it aborts the entire transfer —
+// which caused ~70% of file data to be silently lost during streaming.
+static bool send_notification(uint16_t connection_id, uint16_t attribute_handle,
+                              uint8_t *data, int length) {
+  for (int attempt = 0; attempt < 200; attempt++) {
+    // ble_gatts_notify_custom consumes the mbuf regardless of success or
+    // failure, so we must allocate a fresh one on every attempt.
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, length);
+    if (om == nullptr) {
+      delay(5);
+      continue;
+    }
+
+    int rc = ble_gatts_notify_custom(connection_id, attribute_handle, om);
+    if (rc == 0) {
+      return true;
+    }
+    // Non-zero means congestion (BLE_HS_ENOMEM = 6, BLE_HS_EBUSY = 15, etc).
+    // Wait briefly for the BLE stack to drain and retry.
+    delay(5);
+  }
+  return false;
+}
+
 static void stream_current_file() {
-  if (!client_connected) {
+  if (!client_connected || ble_server == nullptr) {
     return;
   }
 
@@ -240,12 +273,25 @@ static void stream_current_file() {
   uint32_t file_size = file.size();
   file_info_characteristic->setValue(file_size);
 
-  uint8_t chunk[ble_chunk_size];
+  uint16_t connection_id = ble_server->getConnId();
+  uint16_t attribute_handle = audio_data_characteristic->getHandle();
+
+  // BLE notification payload is MTU minus 3 bytes of ATT header. Fall back to
+  // 20 if the server reports an unexpectedly low value.
+  uint16_t mtu = ble_server->getPeerMTU(connection_id);
+  int chunk_size = (mtu > 3) ? (mtu - 3) : 20;
+  uint8_t chunk[512];
+  if (chunk_size > (int)sizeof(chunk)) {
+    chunk_size = sizeof(chunk);
+  }
+
   while (file.available() && client_connected) {
-    int bytes_read = file.read(chunk, ble_chunk_size);
+    int bytes_read = file.read(chunk, chunk_size);
     if (bytes_read > 0) {
-      audio_data_characteristic->setValue(chunk, bytes_read);
-      audio_data_characteristic->notify();
+      if (!send_notification(connection_id, attribute_handle, chunk,
+                             bytes_read)) {
+        break;
+      }
     }
   }
   file.close();
@@ -278,10 +324,11 @@ class command_callbacks : public BLECharacteristicCallbacks {
 
 static void init_ble() {
   BLEDevice::init("Middle");
-  BLEServer *server = BLEDevice::createServer();
-  server->setCallbacks(new server_callbacks());
+  BLEDevice::setMTU(517);
+  ble_server = BLEDevice::createServer();
+  ble_server->setCallbacks(new server_callbacks());
 
-  BLEService *service = server->createService(service_uuid);
+  BLEService *service = ble_server->createService(service_uuid);
   file_count_characteristic = service->createCharacteristic(
       characteristic_file_count_uuid, BLECharacteristic::PROPERTY_READ);
   file_info_characteristic = service->createCharacteristic(

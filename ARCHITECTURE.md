@@ -130,7 +130,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 |---|---|---|---|
 | File Count | `...1214` → `0001` | Read | Number of pending recordings on flash |
 | File Info | `...1214` → `0002` | Read | Size in bytes of the current file being sent |
-| Audio Data | `...1214` → `0003` | Notify | Chunked audio data stream (20-byte chunks) |
+| Audio Data | `...1214` → `0003` | Notify | Chunked audio data stream (sized to negotiated MTU) |
 | Command | `...1214` → `0004` | Write | Commands from the phone to the pendant |
 
 **Commands (phone → pendant):**
@@ -147,7 +147,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 2. Phone's companion app (running background BLE scan) detects the pendant.
 3. Phone connects, reads File Count characteristic.
 4. Phone writes `REQUEST_NEXT` to Command characteristic.
-5. Pendant reads the next file from flash, updates File Info with the file size, and streams the file as a series of 20-byte Notify packets on Audio Data.
+5. Pendant reads the next file from flash, updates File Info with the file size, and streams the file as a series of Notify packets on Audio Data (chunk size matches the negotiated MTU payload).
 6. Phone reassembles the file, writes `ACK_RECEIVED`.
 7. Pendant deletes the file from flash, updates File Count.
 8. Repeat from step 4 until File Count reaches 0.
@@ -159,7 +159,9 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 - BLE advertising window: 5 seconds (if no connection, go to sleep).
 - Sync session timeout: 30 seconds (safety net to avoid draining the battery if something hangs).
 
-**MTU**: Uses platform-default BLE MTU negotiation. Audio packets use 20-byte Notify chunks for reliable transfers across phone stacks.
+**MTU**: The firmware requests an MTU of 517 (the BLE maximum). After negotiation, audio chunks use the full negotiated payload size (MTU minus 3 bytes of ATT header), typically 244–509 bytes per packet.
+
+**Notification delivery and the Arduino BLE wrapper bug**: The firmware calls NimBLE's `ble_gatts_notify_custom()` directly instead of using the Arduino BLE library's `BLECharacteristic::notify()`. This is intentional and required for reliable transfers. The Arduino wrapper calls the same NimBLE function internally, but when it returns a non-zero error code (e.g. `BLE_HS_ENOMEM` when the mbuf pool is temporarily exhausted because the firmware is queuing data faster than the radio can transmit), the wrapper logs the error and aborts the entire notification loop — there is no retry. Since the file read pointer has already advanced past the data that failed to send, those chunks are permanently lost. In practice this caused transfers to silently lose ~70-80% of file data and stall. The fix is to call `ble_gatts_notify_custom()` directly and retry with a short delay on any non-zero return, which gives the BLE stack time to drain before re-attempting. The `os_mbuf` must be freshly allocated on each attempt because NimBLE consumes it regardless of success or failure.
 
 ### Sync-Only Tap
 
