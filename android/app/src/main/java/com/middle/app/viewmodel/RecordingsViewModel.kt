@@ -3,6 +3,7 @@ package com.middle.app.viewmodel
 import android.app.Application
 import android.media.MediaPlayer
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.middle.app.MiddleApplication
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -90,12 +92,15 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                 httpClient.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                         Log.d(TAG, "Webhook resend succeeded for ${recording.audioFile.name}.")
+                        showToast("Webhook sent")
                     } else {
                         Log.w(TAG, "Webhook resend failed with status ${response.code} for ${recording.audioFile.name}.")
+                        showToast("Webhook failed (${response.code})")
                     }
                 }
             } catch (exception: Exception) {
                 Log.w(TAG, "Webhook resend error for ${recording.audioFile.name}: $exception")
+                showToast("Webhook failed")
             }
         }
     }
@@ -107,6 +112,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         super.onCleared()
         stopPlayback()
+    }
+
+    private suspend fun showToast(message: String) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
+        }
     }
 
     companion object {
