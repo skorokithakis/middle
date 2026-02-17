@@ -96,59 +96,58 @@ static uint8_t adpcm_encode_sample(int16_t sample, adpcm_state &state) {
   return nibble;
 }
 
-// Ring buffer for draining ADPCM output to LittleFS. Sized to absorb
-// worst-case flash write stalls (~10ms at 4 KB/s = ~40 bytes, but we use
-// 4 KB for generous headroom).
+// Lock-free single-producer single-consumer ring buffer for draining ADPCM
+// output to LittleFS. The sampling loop (producer) and a separate flash-
+// writer FreeRTOS task (consumer) run on different cores so flash page-erase
+// stalls never block sample capture. Sized to absorb worst-case flash write
+// stalls (~10 ms at 4 KB/s ≈ 40 bytes, but we use 4 KB for headroom).
 static const size_t ring_buffer_capacity = 4096;
 static uint8_t ring_buffer[ring_buffer_capacity];
-static size_t ring_buffer_head = 0;
-static size_t ring_buffer_count = 0;
+static volatile size_t ring_buffer_head = 0; // read index (consumer)
+static volatile size_t ring_buffer_tail = 0; // write index (producer)
 
 static void ring_buffer_reset() {
   ring_buffer_head = 0;
-  ring_buffer_count = 0;
+  ring_buffer_tail = 0;
 }
 
 static void ring_buffer_push(uint8_t byte) {
-  size_t write_position = (ring_buffer_head + ring_buffer_count) % ring_buffer_capacity;
-  ring_buffer[write_position] = byte;
-  if (ring_buffer_count < ring_buffer_capacity) {
-    ring_buffer_count++;
-  } else {
-    // Overflow — oldest byte is lost. This shouldn't happen with proper
-    // flush cadence, but we advance head to keep the buffer consistent.
-    ring_buffer_head = (ring_buffer_head + 1) % ring_buffer_capacity;
+  size_t next_tail = (ring_buffer_tail + 1) % ring_buffer_capacity;
+  if (next_tail == ring_buffer_head) {
+    // Buffer full — sample lost. Shouldn't happen with the writer task
+    // draining continuously, but prevents corruption if it does.
+    return;
   }
+  ring_buffer[ring_buffer_tail] = byte;
+  ring_buffer_tail = next_tail;
 }
 
-// Flush up to `max_bytes` from the ring buffer to the open file. Returns
-// the number of bytes written, or -1 on write error.
-static int ring_buffer_flush(File &file, size_t max_bytes) {
-  size_t to_write = ring_buffer_count;
-  if (to_write > max_bytes) {
-    to_write = max_bytes;
-  }
-  if (to_write == 0) {
-    return 0;
-  }
+// Writer task state — offloads flash writes to core 0 so the sampling
+// loop on core 1 never stalls on LittleFS page erases.
+static volatile bool writer_active = false;
+static volatile bool writer_error = false;
+static volatile bool writer_done = false;
 
-  size_t total_written = 0;
-  while (to_write > 0) {
-    // Write in contiguous chunks to avoid byte-at-a-time overhead.
-    size_t contiguous = ring_buffer_capacity - ring_buffer_head;
-    if (contiguous > to_write) {
-      contiguous = to_write;
+static void flash_writer_task(void *param) {
+  File *file = (File *)param;
+  while (writer_active || ring_buffer_head != ring_buffer_tail) {
+    size_t h = ring_buffer_head;
+    size_t t = ring_buffer_tail;
+    if (h == t) {
+      vTaskDelay(1);
+      continue;
     }
-    size_t written = file.write(&ring_buffer[ring_buffer_head], contiguous);
+    // Write the largest contiguous chunk available.
+    size_t contiguous = (t > h) ? (t - h) : (ring_buffer_capacity - h);
+    size_t written = file->write(&ring_buffer[h], contiguous);
     if (written != contiguous) {
-      return -1;
+      writer_error = true;
+      break;
     }
-    ring_buffer_head = (ring_buffer_head + written) % ring_buffer_capacity;
-    ring_buffer_count -= written;
-    to_write -= written;
-    total_written += written;
+    ring_buffer_head = (h + written) % ring_buffer_capacity;
   }
-  return (int)total_written;
+  writer_done = true;
+  vTaskDelete(nullptr);
 }
 
 static const char *service_uuid = "19b10000-e8f2-537e-4f6c-d104768a1214";
@@ -368,15 +367,27 @@ static bool record_and_save() {
     ring_buffer_reset();
     adpcm_state encoder_state = {0, 0};
 
+    // Start the flash writer on core 0 so page-erase stalls never block
+    // the sampling loop running here on core 1.
+    writer_active = true;
+    writer_error = false;
+    writer_done = false;
+    TaskHandle_t writer_handle = nullptr;
+    if (xTaskCreatePinnedToCore(flash_writer_task, "flash_wr", 4096, &file,
+                                1, &writer_handle, 0) != pdPASS) {
+      file.close();
+      LittleFS.remove(filename);
+      break;
+    }
+
     unsigned long record_start_milliseconds = millis();
     uint32_t sample_count = 0;
-    bool write_error = false;
     // Tracks whether we're holding an incomplete byte (the low nibble has
     // been written but the high nibble hasn't arrived yet).
     bool nibble_pending = false;
     uint8_t packed_byte = 0;
 
-    while (digitalRead(pin_button) == LOW && !write_error) {
+    while (digitalRead(pin_button) == LOW && !writer_error) {
       unsigned long sample_start_microseconds = micros();
       uint16_t raw = analogRead(pin_mic);
       uint8_t sample = (uint8_t)(raw >> 4);
@@ -403,14 +414,6 @@ static bool record_and_save() {
         nibble_pending = false;
       }
 
-      // Flush when the ring buffer is half full to keep headroom for flash
-      // write stalls.
-      if (ring_buffer_count >= ring_buffer_capacity / 2) {
-        if (ring_buffer_flush(file, ring_buffer_count) < 0) {
-          write_error = true;
-        }
-      }
-
       while (micros() - sample_start_microseconds < sample_interval_microseconds) {
       }
     }
@@ -420,15 +423,14 @@ static bool record_and_save() {
       ring_buffer_push(packed_byte);
     }
 
-    // Drain any remaining data.
-    if (!write_error && ring_buffer_count > 0) {
-      if (ring_buffer_flush(file, ring_buffer_count) < 0) {
-        write_error = true;
-      }
+    // Signal the writer task to drain remaining data and wait for it.
+    writer_active = false;
+    while (!writer_done) {
+      delay(1);
     }
 
     unsigned long duration_milliseconds = millis() - record_start_milliseconds;
-    if (duration_milliseconds < minimum_recording_milliseconds || write_error) {
+    if (duration_milliseconds < minimum_recording_milliseconds || writer_error) {
       file.close();
       LittleFS.remove(filename);
       break;
