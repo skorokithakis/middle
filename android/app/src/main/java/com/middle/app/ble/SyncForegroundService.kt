@@ -25,9 +25,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class SyncForegroundService : Service() {
 
@@ -183,6 +189,33 @@ class SyncForegroundService : Service() {
                             if (text != null) {
                                 repository.saveTranscript(text, audioFile)
                                 Log.d(TAG, "Saved transcript for $filename.")
+
+                                val webhookUrl = settings.webhookUrl.trim()
+                                if (settings.webhookEnabled && webhookUrl.isNotEmpty()) {
+                                    try {
+                                        val httpClient = OkHttpClient.Builder()
+                                            .connectTimeout(10, TimeUnit.SECONDS)
+                                            .readTimeout(10, TimeUnit.SECONDS)
+                                            .build()
+
+                                        val json = JSONObject().put("phrase", text).toString()
+                                        val body = json.toRequestBody("application/json".toMediaType())
+                                        val request = Request.Builder()
+                                            .url(webhookUrl)
+                                            .post(body)
+                                            .build()
+
+                                        httpClient.newCall(request).execute().use { response ->
+                                            if (response.isSuccessful) {
+                                                Log.d(TAG, "Webhook POST succeeded for $filename.")
+                                            } else {
+                                                Log.w(TAG, "Webhook POST failed with status ${response.code} for $filename.")
+                                            }
+                                        }
+                                    } catch (exception: Exception) {
+                                        Log.w(TAG, "Webhook POST error for $filename: $exception")
+                                    }
+                                }
                             } else {
                                 // Disable further transcription attempts this
                                 // session if the first one fails, same as sync.py.

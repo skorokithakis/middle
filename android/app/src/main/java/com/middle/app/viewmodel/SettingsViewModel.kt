@@ -19,6 +19,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _transcriptionEnabled = MutableStateFlow(settings.transcriptionEnabled)
     val transcriptionEnabled: StateFlow<Boolean> = _transcriptionEnabled
 
+    private val _webhookEnabled = MutableStateFlow(settings.webhookEnabled)
+    val webhookEnabled: StateFlow<Boolean> = _webhookEnabled
+
+    private val _webhookUrl = MutableStateFlow(settings.webhookUrl)
+    val webhookUrl: StateFlow<String> = _webhookUrl
+
     fun setApiKey(key: String) {
         settings.openAiApiKey = key
         _apiKey.value = key
@@ -32,5 +38,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setTranscription(enabled: Boolean) {
         settings.transcriptionEnabled = enabled
         _transcriptionEnabled.value = enabled
+    }
+
+    fun setWebhookEnabled(enabled: Boolean) {
+        settings.webhookEnabled = enabled
+        _webhookEnabled.value = enabled
+    }
+
+    fun setWebhookUrl(url: String) {
+        settings.webhookUrl = url
+        _webhookUrl.value = url
     }
 }

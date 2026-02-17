@@ -28,9 +28,19 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_TRANSCRIPTION, true)
         set(value) = prefs.edit().putBoolean(KEY_TRANSCRIPTION, value).apply()
 
+    var webhookEnabled: Boolean
+        get() = prefs.getBoolean(KEY_WEBHOOK_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_WEBHOOK_ENABLED, value).apply()
+
+    var webhookUrl: String
+        get() = prefs.getString(KEY_WEBHOOK_URL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_WEBHOOK_URL, value).apply()
+
     companion object {
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_BACKGROUND_SYNC = "background_sync"
         private const val KEY_TRANSCRIPTION = "transcription"
+        private const val KEY_WEBHOOK_ENABLED = "webhook_enabled"
+        private const val KEY_WEBHOOK_URL = "webhook_url"
     }
 }
