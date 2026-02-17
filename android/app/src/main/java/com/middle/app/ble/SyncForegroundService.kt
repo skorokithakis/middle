@@ -15,6 +15,7 @@ import com.middle.app.MiddleApplication
 import com.middle.app.R
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import com.middle.app.data.WebhookLog
 import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -214,15 +215,20 @@ class SyncForegroundService : Service() {
                                             .post(body)
                                             .build()
 
+                                        WebhookLog.info("POST $webhookUrl ($filename)")
                                         httpClient.newCall(request).execute().use { response ->
+                                            val responseBody = response.body?.string()?.take(500) ?: ""
                                             if (response.isSuccessful) {
                                                 Log.d(TAG, "Webhook POST succeeded for $filename.")
+                                                WebhookLog.info("${response.code} OK ($filename)")
                                             } else {
                                                 Log.w(TAG, "Webhook POST failed with status ${response.code} for $filename.")
+                                                WebhookLog.error("${response.code} ${response.message} ($filename): $responseBody")
                                             }
                                         }
                                     } catch (exception: Exception) {
                                         Log.w(TAG, "Webhook POST error for $filename: $exception")
+                                        WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
                                     }
                                 }
                             } else {
