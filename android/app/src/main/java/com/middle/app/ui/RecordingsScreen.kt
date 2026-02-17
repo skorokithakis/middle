@@ -10,14 +10,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -31,8 +34,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.middle.app.R
 import com.middle.app.ble.SyncForegroundService
 import com.middle.app.data.Recording
 import com.middle.app.viewmodel.RecordingsViewModel
@@ -115,6 +120,8 @@ fun RecordingsScreen(
                             recording = recording,
                             isPlaying = currentlyPlaying == recording,
                             onTogglePlayback = { viewModel.togglePlayback(recording) },
+                            showResendWebhook = viewModel.webhookEnabled && recording.hasTranscript,
+                            onResendWebhook = { viewModel.sendWebhook(recording) },
                         )
                     }
                 }
@@ -128,6 +135,8 @@ private fun RecordingItem(
     recording: Recording,
     isPlaying: Boolean,
     onTogglePlayback: () -> Unit,
+    showResendWebhook: Boolean,
+    onResendWebhook: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -154,11 +163,22 @@ private fun RecordingItem(
                     )
                 }
 
-                FilledTonalButton(onClick = onTogglePlayback) {
-                    Text(if (isPlaying) "Stop" else "Play")
+                IconButton(onClick = onTogglePlayback) {
+                    if (isPlaying) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_stop),
+                            contentDescription = "Stop",
+                            modifier = Modifier.size(24.dp),
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Play",
+                        )
+                    }
                 }
 
-                FilledTonalButton(
+                IconButton(
                     onClick = {
                         val uri = FileProvider.getUriForFile(
                             context,
@@ -172,9 +192,20 @@ private fun RecordingItem(
                         }
                         context.startActivity(Intent.createChooser(shareIntent, "Share recording"))
                     },
-                    modifier = Modifier.padding(start = 8.dp),
                 ) {
-                    Text("Share")
+                    Icon(
+                        imageVector = Icons.Default.Share,
+                        contentDescription = "Share",
+                    )
+                }
+
+                if (showResendWebhook) {
+                    IconButton(onClick = onResendWebhook) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Resend webhook",
+                        )
+                    }
                 }
             }
 

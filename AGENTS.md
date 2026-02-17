@@ -149,3 +149,8 @@
 - Add a real lint stack (`ruff` for Python, `clang-format` or `clang-tidy` for C++).
 - Add automated tests for sync protocol parsing and audio conversion.
 - Add a minimal hardware-in-the-loop smoke test script for upload and BLE handshake.
+
+
+## android app
+
+- When working on the Android app, try to install it when done.
