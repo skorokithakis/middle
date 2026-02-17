@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Middle</string>
+    <string name="sync_notification_channel">Sync</string>
+    <string name="sync_notification_title">Middle</string>
+    <string name="sync_notification_scanning">Scanning for pendant…</string>
+    <string name="sync_notification_connecting">Connecting to pendant…</string>
+    <string name="sync_notification_syncing">Syncing recordings…</string>
+    <string name="sync_notification_idle">Background sync active</string>
+</resources>
