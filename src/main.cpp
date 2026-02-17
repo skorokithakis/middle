@@ -99,9 +99,9 @@ static uint8_t adpcm_encode_sample(int16_t sample, adpcm_state &state) {
 // Lock-free single-producer single-consumer ring buffer for draining ADPCM
 // output to LittleFS. The sampling loop (producer) and a separate flash-
 // writer FreeRTOS task (consumer) run on different cores so flash page-erase
-// stalls never block sample capture. Sized to absorb worst-case flash write
-// stalls (~10 ms at 4 KB/s ≈ 40 bytes, but we use 4 KB for headroom).
-static const size_t ring_buffer_capacity = 4096;
+// stalls never block sample capture. At 16 kHz ADPCM (8 KB/s), 32 KB gives
+// ~4 seconds of headroom to absorb worst-case LittleFS page-erase stalls.
+static const size_t ring_buffer_capacity = 32768;
 static uint8_t ring_buffer[ring_buffer_capacity];
 static volatile size_t ring_buffer_head = 0; // read index (consumer)
 static volatile size_t ring_buffer_tail = 0; // write index (producer)
