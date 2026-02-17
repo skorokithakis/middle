@@ -10,6 +10,7 @@ import com.middle.app.MiddleApplication
 import com.middle.app.data.Recording
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import com.middle.app.data.WebhookLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -88,19 +89,25 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                 .post(body)
                 .build()
 
+            val filename = recording.audioFile.name
+            WebhookLog.info("POST $webhookUrl ($filename)")
             try {
                 httpClient.newCall(request).execute().use { response ->
+                    val responseBody = response.body?.string()?.take(500) ?: ""
                     if (response.isSuccessful) {
-                        Log.d(TAG, "Webhook resend succeeded for ${recording.audioFile.name}.")
+                        Log.d(TAG, "Webhook resend succeeded for $filename.")
+                        WebhookLog.info("${response.code} OK ($filename)")
                         showToast("Webhook sent")
                     } else {
-                        Log.w(TAG, "Webhook resend failed with status ${response.code} for ${recording.audioFile.name}.")
+                        Log.w(TAG, "Webhook resend failed with status ${response.code} for $filename.")
+                        WebhookLog.error("${response.code} ${response.message} ($filename): $responseBody")
                         showToast("Webhook failed (${response.code})")
                     }
                 }
             } catch (exception: Exception) {
-                Log.w(TAG, "Webhook resend error for ${recording.audioFile.name}: $exception")
-                showToast("Webhook failed")
+                Log.w(TAG, "Webhook resend error for $filename: $exception")
+                WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
+                showToast("Webhook failed: ${exception.message}")
             }
         }
     }
