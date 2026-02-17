@@ -6,13 +6,15 @@ Index 01](https://repebble.com/index), but I wanted it now, so I made it.
 It uses a microphone and an ESP32 S3 to record your thoughts and transfer them to your
 phone/computer/whatever for later processing.
 
+There's an Android app and a Python script so you can transfer the files to the PC.
+
 ## Features
 
 * Press a button to record, release to stop.
 * Bluetooth syncing happens after a recording, or tap the button quickly to force a BT wakeup/sync.
 * Supports long audio files (probably many minutes).
 * Transferring files to the PC is pretty fast.
-* Transcribes the audio files using OpenAI's GPT 4o transcribe.
+* Optionally transcribes the audio files using OpenAI's GPT 4o transcribe.
 * Light on battery life, since it consumes no power when not in use.
 * Privacy-preserving, no connections anywhere, no nothing.
 
