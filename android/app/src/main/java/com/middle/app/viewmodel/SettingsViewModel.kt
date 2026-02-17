@@ -25,6 +25,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _webhookUrl = MutableStateFlow(settings.webhookUrl)
     val webhookUrl: StateFlow<String> = _webhookUrl
 
+    private val _webhookBodyTemplate = MutableStateFlow(settings.webhookBodyTemplate)
+    val webhookBodyTemplate: StateFlow<String> = _webhookBodyTemplate
+
     fun setApiKey(key: String) {
         settings.openAiApiKey = key
         _apiKey.value = key
@@ -48,5 +51,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setWebhookUrl(url: String) {
         settings.webhookUrl = url
         _webhookUrl.value = url
+    }
+
+    fun setWebhookBodyTemplate(template: String) {
+        settings.webhookBodyTemplate = template
+        _webhookBodyTemplate.value = template
     }
 }

@@ -38,6 +38,7 @@ fun SettingsScreen(
     val transcription by viewModel.transcriptionEnabled.collectAsState()
     val webhookEnabled by viewModel.webhookEnabled.collectAsState()
     val webhookUrl by viewModel.webhookUrl.collectAsState()
+    val webhookBodyTemplate by viewModel.webhookBodyTemplate.collectAsState()
 
     Scaffold(
         topBar = {
@@ -133,6 +134,18 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     placeholder = { Text("https://example.com/webhook") },
+                    label = { Text("URL") },
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = webhookBodyTemplate,
+                    onValueChange = { viewModel.setWebhookBodyTemplate(it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = false,
+                    minLines = 2,
+                    placeholder = { Text("{\"phrase\": \"\$transcript\"}") },
+                    label = { Text("Body template") },
+                    supportingText = { Text("\$transcript is replaced with the transcription text") },
                 )
             }
         }

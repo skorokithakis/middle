@@ -198,7 +198,16 @@ class SyncForegroundService : Service() {
                                             .readTimeout(10, TimeUnit.SECONDS)
                                             .build()
 
-                                        val json = JSONObject().put("phrase", text).toString()
+                                        // JSON-encode the transcript so quotes, newlines, etc.
+                                        // don't break the user's template. JSONObject.quote()
+                                        // returns the string wrapped in double quotes, so we
+                                        // strip those to get just the escaped content.
+                                        val jsonEscapedText = JSONObject.quote(text)
+                                            .removeSurrounding("\"")
+                                        val template = settings.webhookBodyTemplate.ifBlank {
+                                            Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
+                                        }
+                                        val json = template.replace("\$transcript", jsonEscapedText)
                                         val body = json.toRequestBody("application/json".toMediaType())
                                         val request = Request.Builder()
                                             .url(webhookUrl)

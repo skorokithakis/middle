@@ -36,11 +36,17 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_WEBHOOK_URL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_WEBHOOK_URL, value).apply()
 
+    var webhookBodyTemplate: String
+        get() = prefs.getString(KEY_WEBHOOK_BODY_TEMPLATE, DEFAULT_WEBHOOK_BODY_TEMPLATE) ?: DEFAULT_WEBHOOK_BODY_TEMPLATE
+        set(value) = prefs.edit().putString(KEY_WEBHOOK_BODY_TEMPLATE, value).apply()
+
     companion object {
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_BACKGROUND_SYNC = "background_sync"
         private const val KEY_TRANSCRIPTION = "transcription"
         private const val KEY_WEBHOOK_ENABLED = "webhook_enabled"
         private const val KEY_WEBHOOK_URL = "webhook_url"
+        private const val KEY_WEBHOOK_BODY_TEMPLATE = "webhook_body_template"
+        const val DEFAULT_WEBHOOK_BODY_TEMPLATE = "{\"phrase\": \"\$transcript\"}"
     }
 }
