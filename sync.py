@@ -237,12 +237,17 @@ async def sync_recordings(
                 await asyncio.sleep(0.1)
                 raw = await client.read_gatt_char(CHARACTERISTIC_FILE_INFO_UUID)
                 expected_size = struct.unpack("<I", raw)[0]
+
+                # Empty files are corrupt or aborted recordings. Skip them
+                # immediately rather than retrying.
+                if expected_size == 0:
+                    log(f"File {i + 1}/{file_count} is empty, skipping.")
+                    break
+
                 # The file contains a 4-byte header plus ADPCM nibbles, so
                 # we can't directly divide by sample rate for duration.
                 # We'll compute it after decoding. Show raw size for now.
-                adpcm_sample_count = 0
-                if expected_size >= IMA_HEADER_SIZE:
-                    adpcm_sample_count = (expected_size - IMA_HEADER_SIZE) * 2
+                adpcm_sample_count = (expected_size - IMA_HEADER_SIZE) * 2
                 duration_seconds = adpcm_sample_count / SAMPLE_RATE
                 log(
                     f"File size: {expected_size} bytes "
@@ -288,7 +293,15 @@ async def sync_recordings(
                 audio_data = audio_data[:expected_size]
                 break
 
-        if len(audio_data) != expected_size or expected_size == 0:
+        # Handle empty files: ACK to delete from pendant and continue.
+        if expected_size == 0:
+            await client.write_gatt_char(
+                CHARACTERISTIC_COMMAND_UUID, COMMAND_ACK_RECEIVED
+            )
+            synced += 1
+            continue
+
+        if len(audio_data) != expected_size:
             raise RuntimeError(
                 f"Failed to transfer file {i + 1}/{file_count} after "
                 f"{MAX_FILE_TRANSFER_ATTEMPTS} attempts."

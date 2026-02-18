@@ -94,9 +94,10 @@ class PendantBleManager(context: Context) : BleManager(context) {
      * data notifications, sends REQUEST_NEXT, collects chunks until
      * expectedSize bytes are received, then unsubscribes.
      *
-     * Returns the raw IMA ADPCM file data (header + payload).
+     * Returns the raw IMA ADPCM file data (header + payload), or null if
+     * the file is empty (corrupt or aborted recording).
      */
-    suspend fun requestNextFile(): ByteArray {
+    suspend fun requestNextFile(): ByteArray? {
         val audioCharacteristic = audioDataCharacteristic
             ?: throw IllegalStateException("Not connected or service not discovered.")
 
@@ -129,8 +130,11 @@ class PendantBleManager(context: Context) : BleManager(context) {
                 expectedSize = readFileInfo()
                 Log.d(TAG, "Expecting $expectedSize bytes.")
 
+                // Empty files are corrupt or aborted recordings. Return null
+                // immediately rather than retrying.
                 if (expectedSize == 0) {
-                    throw RuntimeException("Pendant reported 0-byte file.")
+                    Log.w(TAG, "File is empty, skipping.")
+                    return null
                 }
 
                 // If chunks arrived before we read expectedSize, check now.

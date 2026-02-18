@@ -172,6 +172,15 @@ class SyncForegroundService : Service() {
                 updateNotification("Syncing file ${i + 1}/$fileCount...")
 
                 val imaData = manager.requestNextFile()
+
+                // Empty files are corrupt or aborted recordings. ACK to delete
+                // them from the pendant and continue to the next file.
+                if (imaData == null) {
+                    Log.d(TAG, "Skipping empty file ${i + 1}/$fileCount.")
+                    manager.acknowledgeFile()
+                    continue
+                }
+
                 Log.d(TAG, "Received ${imaData.size} bytes.")
 
                 val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
