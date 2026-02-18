@@ -10,6 +10,7 @@ import com.middle.app.MiddleApplication
 import com.middle.app.data.Recording
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import com.middle.app.data.WebhookClient
 import com.middle.app.data.WebhookLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,12 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
-import java.util.concurrent.TimeUnit
 
 class RecordingsViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -72,37 +67,21 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         if (!settings.webhookEnabled || webhookUrl.isEmpty()) return
 
         viewModelScope.launch(Dispatchers.IO) {
-            val httpClient = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(10, TimeUnit.SECONDS)
-                .build()
-
-            val jsonEscapedText = JSONObject.quote(transcript)
-                .removeSurrounding("\"")
             val template = settings.webhookBodyTemplate.ifBlank {
                 Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
             }
-            val json = template.replace("\$transcript", jsonEscapedText)
-            val body = json.toRequestBody("application/json".toMediaType())
-            val request = Request.Builder()
-                .url(webhookUrl)
-                .post(body)
-                .build()
-
             val filename = recording.audioFile.name
             WebhookLog.info("POST $webhookUrl ($filename)")
             try {
-                httpClient.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string()?.take(500) ?: ""
-                    if (response.isSuccessful) {
-                        Log.d(TAG, "Webhook resend succeeded for $filename.")
-                        WebhookLog.info("${response.code} OK ($filename)")
-                        showToast("Webhook sent")
-                    } else {
-                        Log.w(TAG, "Webhook resend failed with status ${response.code} for $filename.")
-                        WebhookLog.error("${response.code} ${response.message} ($filename): $responseBody")
-                        showToast("Webhook failed (${response.code})")
-                    }
+                val result = WebhookClient.post(webhookUrl, transcript, template)
+                if (result.success) {
+                    Log.d(TAG, "Webhook resend succeeded for $filename.")
+                    WebhookLog.info("${result.code} OK ($filename)")
+                    showToast("Webhook sent")
+                } else {
+                    Log.w(TAG, "Webhook resend failed with status ${result.code} for $filename.")
+                    WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
+                    showToast("Webhook failed (${result.code})")
                 }
             } catch (exception: Exception) {
                 Log.w(TAG, "Webhook resend error for $filename: $exception")

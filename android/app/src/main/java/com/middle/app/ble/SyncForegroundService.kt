@@ -15,6 +15,7 @@ import com.middle.app.MiddleApplication
 import com.middle.app.R
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import com.middle.app.data.WebhookClient
 import com.middle.app.data.WebhookLog
 import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.CoroutineScope
@@ -26,15 +27,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 class SyncForegroundService : Service() {
 
@@ -202,38 +197,18 @@ class SyncForegroundService : Service() {
 
                                 val webhookUrl = settings.webhookUrl.trim()
                                 if (settings.webhookEnabled && webhookUrl.isNotEmpty()) {
+                                    val template = settings.webhookBodyTemplate.ifBlank {
+                                        Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
+                                    }
+                                    WebhookLog.info("POST $webhookUrl ($filename)")
                                     try {
-                                        val httpClient = OkHttpClient.Builder()
-                                            .connectTimeout(10, TimeUnit.SECONDS)
-                                            .readTimeout(10, TimeUnit.SECONDS)
-                                            .build()
-
-                                        // JSON-encode the transcript so quotes, newlines, etc.
-                                        // don't break the user's template. JSONObject.quote()
-                                        // returns the string wrapped in double quotes, so we
-                                        // strip those to get just the escaped content.
-                                        val jsonEscapedText = JSONObject.quote(text)
-                                            .removeSurrounding("\"")
-                                        val template = settings.webhookBodyTemplate.ifBlank {
-                                            Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
-                                        }
-                                        val json = template.replace("\$transcript", jsonEscapedText)
-                                        val body = json.toRequestBody("application/json".toMediaType())
-                                        val request = Request.Builder()
-                                            .url(webhookUrl)
-                                            .post(body)
-                                            .build()
-
-                                        WebhookLog.info("POST $webhookUrl ($filename)")
-                                        httpClient.newCall(request).execute().use { response ->
-                                            val responseBody = response.body?.string()?.take(500) ?: ""
-                                            if (response.isSuccessful) {
-                                                Log.d(TAG, "Webhook POST succeeded for $filename.")
-                                                WebhookLog.info("${response.code} OK ($filename)")
-                                            } else {
-                                                Log.w(TAG, "Webhook POST failed with status ${response.code} for $filename.")
-                                                WebhookLog.error("${response.code} ${response.message} ($filename): $responseBody")
-                                            }
+                                        val result = WebhookClient.post(webhookUrl, text, template)
+                                        if (result.success) {
+                                            Log.d(TAG, "Webhook POST succeeded for $filename.")
+                                            WebhookLog.info("${result.code} OK ($filename)")
+                                        } else {
+                                            Log.w(TAG, "Webhook POST failed with status ${result.code} for $filename.")
+                                            WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
                                         }
                                     } catch (exception: Exception) {
                                         Log.w(TAG, "Webhook POST error for $filename: $exception")
