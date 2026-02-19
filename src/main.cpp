@@ -15,7 +15,7 @@
 static const int pin_button = 12;
 static const int pin_mic = 9;
 static const int pin_mic_power = 8;
-static const int pin_battery = 3;
+static const int pin_battery = 1;
 
 static const int sample_rate = 16000;
 static const unsigned long sample_interval_microseconds = 1000000 / sample_rate;
@@ -524,12 +524,21 @@ static void stream_current_file() {
 }
 
 static uint16_t read_battery_millivolts() {
+  // Throwaway read to pre-charge the ADC's sample-and-hold capacitor,
+  // which otherwise doesn't fully settle through the 180k voltage divider.
+  analogRead(pin_battery);
+  delayMicroseconds(100);
+
   uint32_t sum = 0;
   for (int i = 0; i < 10; i++) {
     sum += analogReadMilliVolts(pin_battery);
   }
   // Voltage divider halves the battery voltage, so multiply by 2 to recover it.
-  return (uint16_t)((sum / 10) * 2);
+  // Non-linear correction for ADC reading low due to 180k source impedance.
+  // Correction factor = 1.302 - 0.000065 * raw_mV, i.e. ~1.04 at 4V, ~1.05 at 3.85V.
+  uint32_t raw = (sum / 10) * 2;
+  uint32_t factor = 13020 - 65 * raw / 100;
+  return (uint16_t)(raw * factor / 10000);
 }
 
 class server_callbacks : public BLEServerCallbacks {
