@@ -71,6 +71,7 @@ fun RecordingsScreen(
     val recordings by viewModel.recordings.collectAsState()
     val currentlyPlaying by viewModel.currentlyPlaying.collectAsState()
     val syncState by SyncForegroundService.syncState.collectAsState()
+    val batteryVoltage by SyncForegroundService.batteryVoltage.collectAsState()
     val logEntries by WebhookLog.entries.collectAsState()
     var logExpanded by rememberSaveable { mutableStateOf(false) }
 
@@ -97,11 +98,24 @@ fun RecordingsScreen(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
             ) {
-                Text(
-                    text = syncState,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(16.dp),
-                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = syncState,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "🔋 $batteryVoltage",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             // Webhook log panel.

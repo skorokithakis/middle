@@ -153,4 +153,6 @@
 
 ## android app
 
-- When working on the Android app, try to install it when done.
+- There's an Android companion app in android/, it saves and manages recordings.
+- When working on the Android app, try to install it when done, with
+ `./gradlew installDebug`.

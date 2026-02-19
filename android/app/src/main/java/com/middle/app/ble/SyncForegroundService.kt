@@ -47,6 +47,7 @@ class SyncForegroundService : Service() {
         repository = (application as MiddleApplication).repository
         settings = Settings(this)
         retryQueue = WebhookRetryQueue(this, scope)
+        _batteryVoltage.value = settings.lastBatteryVoltage
         startForegroundNotification(getString(R.string.sync_notification_idle))
         startScanLoop()
     }
@@ -155,6 +156,19 @@ class SyncForegroundService : Service() {
             manager.connectTo(scanResult.device)
             Log.d(TAG, "Connected to pendant.")
 
+            val millivolts = manager.readVoltageMillivolts()
+            if (millivolts != null) {
+                val volts = millivolts / 1000.0
+                val formatted = "%.2fV".format(volts)
+                _batteryVoltage.value = formatted
+                settings.lastBatteryVoltage = formatted
+                Log.d(TAG, "Battery voltage: $formatted ($millivolts mV)")
+            } else {
+                _batteryVoltage.value = "N/A"
+                settings.lastBatteryVoltage = "N/A"
+                Log.d(TAG, "Voltage characteristic not available.")
+            }
+
             updateNotification(getString(R.string.sync_notification_syncing))
             val fileCount = manager.readFileCount()
             Log.d(TAG, "Pendant reports $fileCount pending recording(s).")
@@ -252,5 +266,8 @@ class SyncForegroundService : Service() {
 
         private val _syncState = MutableStateFlow("Idle")
         val syncState: StateFlow<String> = _syncState
+
+        private val _batteryVoltage = MutableStateFlow("N/A")
+        val batteryVoltage: StateFlow<String> = _batteryVoltage
     }
 }

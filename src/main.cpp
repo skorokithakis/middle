@@ -15,6 +15,7 @@
 static const int pin_button = 12;
 static const int pin_mic = 9;
 static const int pin_mic_power = 8;
+static const int pin_battery = 3;
 
 static const int sample_rate = 16000;
 static const unsigned long sample_interval_microseconds = 1000000 / sample_rate;
@@ -159,6 +160,8 @@ static const char *characteristic_audio_data_uuid =
     "19b10003-e8f2-537e-4f6c-d104768a1214";
 static const char *characteristic_command_uuid =
     "19b10004-e8f2-537e-4f6c-d104768a1214";
+static const char *characteristic_voltage_uuid =
+    "19b10005-e8f2-537e-4f6c-d104768a1214";
 
 static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
@@ -169,6 +172,7 @@ static BLEServer *ble_server = nullptr;
 static BLECharacteristic *file_count_characteristic = nullptr;
 static BLECharacteristic *file_info_characteristic = nullptr;
 static BLECharacteristic *audio_data_characteristic = nullptr;
+static BLECharacteristic *voltage_characteristic = nullptr;
 static BLEAdvertising *ble_advertising = nullptr;
 
 static volatile uint8_t pending_command = 0;
@@ -519,6 +523,15 @@ static void stream_current_file() {
   file.close();
 }
 
+static uint16_t read_battery_millivolts() {
+  uint32_t sum = 0;
+  for (int i = 0; i < 10; i++) {
+    sum += analogReadMilliVolts(pin_battery);
+  }
+  // Voltage divider halves the battery voltage, so multiply by 2 to recover it.
+  return (uint16_t)((sum / 10) * 2);
+}
+
 class server_callbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     client_connected = true;
@@ -562,6 +575,11 @@ static void init_ble() {
       characteristic_command_uuid, BLECharacteristic::PROPERTY_WRITE);
   command_characteristic->setCallbacks(new command_callbacks());
 
+  voltage_characteristic = service->createCharacteristic(
+      characteristic_voltage_uuid, BLECharacteristic::PROPERTY_READ);
+  uint16_t initial_voltage = 0;
+  voltage_characteristic->setValue(initial_voltage);
+
   update_file_count();
   uint32_t file_size = 0;
   file_info_characteristic->setValue(file_size);
@@ -581,6 +599,9 @@ static void start_ble_if_needed() {
       init_ble();
       ble_initialized = true;
     }
+    uint16_t millivolts = read_battery_millivolts();
+    voltage_characteristic->setValue(millivolts);
+    Serial.printf("[bat] Battery: %u mV\r\n", millivolts);
     start_ble_advertising();
   }
 }

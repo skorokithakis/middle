@@ -40,6 +40,10 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_WEBHOOK_BODY_TEMPLATE, DEFAULT_WEBHOOK_BODY_TEMPLATE) ?: DEFAULT_WEBHOOK_BODY_TEMPLATE
         set(value) = prefs.edit().putString(KEY_WEBHOOK_BODY_TEMPLATE, value).apply()
 
+    var lastBatteryVoltage: String
+        get() = prefs.getString(KEY_LAST_BATTERY_VOLTAGE, "N/A") ?: "N/A"
+        set(value) = prefs.edit().putString(KEY_LAST_BATTERY_VOLTAGE, value).apply()
+
     companion object {
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_BACKGROUND_SYNC = "background_sync"
@@ -47,6 +51,7 @@ class Settings(context: Context) {
         private const val KEY_WEBHOOK_ENABLED = "webhook_enabled"
         private const val KEY_WEBHOOK_URL = "webhook_url"
         private const val KEY_WEBHOOK_BODY_TEMPLATE = "webhook_body_template"
+        private const val KEY_LAST_BATTERY_VOLTAGE = "last_battery_voltage"
         const val DEFAULT_WEBHOOK_BODY_TEMPLATE = "{\"phrase\": \"\$transcript\"}"
     }
 }

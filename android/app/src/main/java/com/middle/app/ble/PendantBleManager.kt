@@ -25,6 +25,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
     private var fileInfoCharacteristic: BluetoothGattCharacteristic? = null
     private var audioDataCharacteristic: BluetoothGattCharacteristic? = null
     private var commandCharacteristic: BluetoothGattCharacteristic? = null
+    private var voltageCharacteristic: BluetoothGattCharacteristic? = null
 
     override fun isRequiredServiceSupported(gatt: BluetoothGatt): Boolean {
         val service = gatt.getService(SERVICE_UUID) ?: return false
@@ -32,6 +33,8 @@ class PendantBleManager(context: Context) : BleManager(context) {
         fileInfoCharacteristic = service.getCharacteristic(CHARACTERISTIC_FILE_INFO_UUID)
         audioDataCharacteristic = service.getCharacteristic(CHARACTERISTIC_AUDIO_DATA_UUID)
         commandCharacteristic = service.getCharacteristic(CHARACTERISTIC_COMMAND_UUID)
+        // Voltage is optional — older firmware may not expose it.
+        voltageCharacteristic = service.getCharacteristic(CHARACTERISTIC_VOLTAGE_UUID)
         return fileCountCharacteristic != null
             && fileInfoCharacteristic != null
             && audioDataCharacteristic != null
@@ -43,6 +46,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
         fileInfoCharacteristic = null
         audioDataCharacteristic = null
         commandCharacteristic = null
+        voltageCharacteristic = null
     }
 
     override fun initialize() {
@@ -77,6 +81,20 @@ class PendantBleManager(context: Context) : BleManager(context) {
         return ByteBuffer.wrap(data.value!!)
             .order(ByteOrder.LITTLE_ENDIAN)
             .int
+    }
+
+    /**
+     * Reads the battery voltage in millivolts from the optional voltage
+     * characteristic. Returns null if the characteristic is absent (older
+     * firmware), so callers must handle both cases.
+     */
+    suspend fun readVoltageMillivolts(): Int? {
+        val characteristic = voltageCharacteristic ?: return null
+        val data = readCharacteristic(characteristic).suspend()
+        return ByteBuffer.wrap(data.value!!)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .short
+            .toInt() and 0xFFFF
     }
 
     private suspend fun writeCommand(command: Byte) {

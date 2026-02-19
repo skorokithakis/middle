@@ -34,6 +34,7 @@ CHARACTERISTIC_FILE_COUNT_UUID = "19b10001-e8f2-537e-4f6c-d104768a1214"
 CHARACTERISTIC_FILE_INFO_UUID = "19b10002-e8f2-537e-4f6c-d104768a1214"
 CHARACTERISTIC_AUDIO_DATA_UUID = "19b10003-e8f2-537e-4f6c-d104768a1214"
 CHARACTERISTIC_COMMAND_UUID = "19b10004-e8f2-537e-4f6c-d104768a1214"
+CHARACTERISTIC_VOLTAGE_UUID = "19b10005-e8f2-537e-4f6c-d104768a1214"
 
 COMMAND_REQUEST_NEXT = bytes([0x01])
 COMMAND_ACK_RECEIVED = bytes([0x02])
@@ -173,6 +174,13 @@ async def sync_recordings(
 ) -> tuple[int, list[Path]]:
     """Download all pending recordings from the pendant. Returns the number
     of files synced."""
+    try:
+        raw_voltage = await client.read_gatt_char(CHARACTERISTIC_VOLTAGE_UUID)
+        millivolts = struct.unpack("<H", raw_voltage)[0]
+        log(f"Battery: {millivolts / 1000:.2f}V ({millivolts} mV)")
+    except BleakError:
+        log("Voltage info unavailable (older firmware).")
+
     raw = await client.read_gatt_char(CHARACTERISTIC_FILE_COUNT_UUID)
     file_count = struct.unpack("<H", raw)[0]
     log(f"Pendant reports {file_count} pending recording(s).")
