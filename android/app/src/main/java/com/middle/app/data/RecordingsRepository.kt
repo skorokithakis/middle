@@ -41,6 +41,20 @@ class RecordingsRepository(context: Context) {
         return file
     }
 
+    suspend fun deleteRecording(recording: Recording) {
+        withContext(Dispatchers.IO) {
+            recording.audioFile.delete()
+            val transcriptFile = File(
+                recording.audioFile.parent,
+                recording.audioFile.nameWithoutExtension + ".txt",
+            )
+            if (transcriptFile.exists()) {
+                transcriptFile.delete()
+            }
+        }
+        refresh()
+    }
+
     suspend fun saveTranscript(text: String, audioFile: File): File {
         val transcriptFile = File(audioFile.parent, audioFile.nameWithoutExtension + ".txt")
         withContext(Dispatchers.IO) {

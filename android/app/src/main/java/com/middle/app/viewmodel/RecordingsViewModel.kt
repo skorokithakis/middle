@@ -12,6 +12,7 @@ import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
 import com.middle.app.data.WebhookClient
 import com.middle.app.data.WebhookLog
+import com.middle.app.data.WebhookRetryQueue
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -24,6 +25,11 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     val repository = (application as MiddleApplication).repository
     private val settings = Settings(application)
+    private val retryQueue = WebhookRetryQueue(application, viewModelScope)
+
+    init {
+        retryQueue.startRetryLoopIfNeeded()
+    }
 
     val recordings: StateFlow<List<Recording>> = repository.recordings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -82,12 +88,26 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
                     Log.w(TAG, "Webhook resend failed with status ${result.code} for $filename.")
                     WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
                     showToast("Webhook failed (${result.code})")
+                    if (result.code !in 400..499) {
+                        retryQueue.enqueue(transcript, webhookUrl, template, filename)
+                    }
                 }
             } catch (exception: Exception) {
                 Log.w(TAG, "Webhook resend error for $filename: $exception")
                 WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
                 showToast("Webhook failed: ${exception.message}")
+                retryQueue.enqueue(transcript, webhookUrl, template, filename)
             }
+        }
+    }
+
+    fun deleteRecording(recording: Recording) {
+        if (_currentlyPlaying.value == recording) {
+            stopPlayback()
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            retryQueue.removeForRecording(recording.audioFile.name)
+            repository.deleteRecording(recording)
         }
     }
 

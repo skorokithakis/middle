@@ -17,6 +17,7 @@ import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
 import com.middle.app.data.WebhookClient
 import com.middle.app.data.WebhookLog
+import com.middle.app.data.WebhookRetryQueue
 import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -39,11 +40,13 @@ class SyncForegroundService : Service() {
 
     private lateinit var repository: RecordingsRepository
     private lateinit var settings: Settings
+    private lateinit var retryQueue: WebhookRetryQueue
 
     override fun onCreate() {
         super.onCreate()
         repository = (application as MiddleApplication).repository
         settings = Settings(this)
+        retryQueue = WebhookRetryQueue(this, scope)
         startForegroundNotification(getString(R.string.sync_notification_idle))
         startScanLoop()
     }
@@ -145,6 +148,7 @@ class SyncForegroundService : Service() {
     }
 
     private suspend fun syncWithDevice(scanResult: ScanResult) {
+        retryQueue.startRetryLoopIfNeeded()
         val manager = PendantBleManager(this)
         try {
             updateNotification(getString(R.string.sync_notification_connecting))
@@ -209,10 +213,14 @@ class SyncForegroundService : Service() {
                                         } else {
                                             Log.w(TAG, "Webhook POST failed with status ${result.code} for $filename.")
                                             WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
+                                            if (result.code !in 400..499) {
+                                                retryQueue.enqueue(text, webhookUrl, template, filename)
+                                            }
                                         }
                                     } catch (exception: Exception) {
                                         Log.w(TAG, "Webhook POST error for $filename: $exception")
                                         WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
+                                        retryQueue.enqueue(text, webhookUrl, template, filename)
                                     }
                                 }
                             } else {
