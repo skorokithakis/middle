@@ -9,18 +9,34 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.middle.app.ble.SyncForegroundService
+import com.middle.app.ui.LogScreen
 import com.middle.app.ui.RecordingsScreen
 import com.middle.app.ui.SettingsScreen
 import com.middle.app.ui.theme.MiddleTheme
 import com.middle.app.viewmodel.RecordingsViewModel
 import com.middle.app.viewmodel.SettingsViewModel
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -88,19 +104,81 @@ fun MiddleNavigation() {
     val navController = rememberNavController()
     val recordingsViewModel: RecordingsViewModel = viewModel()
     val settingsViewModel: SettingsViewModel = viewModel()
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    val backStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = backStackEntry?.destination?.route
 
-    NavHost(navController = navController, startDestination = "recordings") {
-        composable("recordings") {
-            RecordingsScreen(
-                viewModel = recordingsViewModel,
-                onNavigateToSettings = { navController.navigate("settings") },
-            )
-        }
-        composable("settings") {
-            SettingsScreen(
-                viewModel = settingsViewModel,
-                onBack = { navController.popBackStack() },
-            )
+    val openDrawer: () -> Unit = { scope.launch { drawerState.open() } }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet {
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                    label = { Text("Recordings") },
+                    selected = currentRoute == "recordings",
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate("recordings") {
+                                popUpTo("recordings") { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    },
+                )
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                    label = { Text("Log") },
+                    selected = currentRoute == "log",
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate("log") {
+                                popUpTo("recordings") { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    },
+                )
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    label = { Text("Settings") },
+                    selected = currentRoute == "settings",
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate("settings") {
+                                popUpTo("recordings") { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    },
+                )
+            }
+        },
+    ) {
+        NavHost(navController = navController, startDestination = "recordings") {
+            composable("recordings") {
+                RecordingsScreen(
+                    viewModel = recordingsViewModel,
+                    onOpenDrawer = openDrawer,
+                )
+            }
+            composable("log") {
+                LogScreen(onOpenDrawer = openDrawer)
+            }
+            composable("settings") {
+                SettingsScreen(
+                    viewModel = settingsViewModel,
+                    onOpenDrawer = openDrawer,
+                )
+            }
         }
     }
 }

@@ -1,9 +1,7 @@
 package com.middle.app.ui
 
 import android.content.Intent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,21 +9,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -43,20 +36,16 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.middle.app.R
 import com.middle.app.ble.SyncForegroundService
 import com.middle.app.data.Recording
-import com.middle.app.data.WebhookLog
 import com.middle.app.viewmodel.RecordingsViewModel
 import java.time.format.DateTimeFormatter
 
@@ -66,22 +55,51 @@ private val DISPLAY_FORMAT = DateTimeFormatter.ofPattern("MMM d, yyyy  HH:mm")
 @Composable
 fun RecordingsScreen(
     viewModel: RecordingsViewModel,
-    onNavigateToSettings: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     val recordings by viewModel.recordings.collectAsState()
     val currentlyPlaying by viewModel.currentlyPlaying.collectAsState()
     val syncState by SyncForegroundService.syncState.collectAsState()
     val batteryVoltage by SyncForegroundService.batteryVoltage.collectAsState()
-    val logEntries by WebhookLog.entries.collectAsState()
-    var logExpanded by rememberSaveable { mutableStateOf(false) }
+    var showDeleteAllDialog by remember { mutableStateOf(false) }
+
+    if (showDeleteAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAllDialog = false },
+            title = { Text("Delete all recordings?") },
+            text = { Text("All recordings and transcripts will be permanently deleted.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteAllRecordings()
+                        showDeleteAllDialog = false
+                    },
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAllDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+        )
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Middle") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Default.Menu, contentDescription = "Open menu")
+                    }
+                },
                 actions = {
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    if (recordings.isNotEmpty()) {
+                        IconButton(onClick = { showDeleteAllDialog = true }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete all recordings")
+                        }
                     }
                 },
             )
@@ -115,58 +133,6 @@ fun RecordingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-            }
-
-            // Webhook log panel.
-            if (logEntries.isNotEmpty()) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp),
-                ) {
-                    Column {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { logExpanded = !logExpanded }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = "Webhook Log (${logEntries.size})",
-                                style = MaterialTheme.typography.labelMedium,
-                            )
-                            Icon(
-                                imageVector = if (logExpanded) Icons.Default.KeyboardArrowUp
-                                    else Icons.Default.KeyboardArrowDown,
-                                contentDescription = if (logExpanded) "Collapse" else "Expand",
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                        AnimatedVisibility(visible = logExpanded) {
-                            Column(
-                                modifier = Modifier
-                                    .heightIn(max = 200.dp)
-                                    .verticalScroll(rememberScrollState())
-                                    .horizontalScroll(rememberScrollState())
-                                    .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-                            ) {
-                                logEntries.forEach { entry ->
-                                    Text(
-                                        text = "${entry.timestamp}  ${entry.message}",
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 11.sp,
-                                        ),
-                                        color = if (entry.isError) MaterialTheme.colorScheme.error
-                                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
-                        }
-                    }
                 }
             }
 
