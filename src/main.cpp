@@ -347,9 +347,9 @@ static void update_file_count() {
   }
 }
 
-// Buffer size for each i2s_channel_read() call. 512 32-bit frames gives
-// ~32ms of audio per read, which is a comfortable granularity for the button
-// check and keeps DMA stalls negligible.
+// Buffer size for each i2s_channel_read() call. In stereo mode each frame
+// contains a left and a right 32-bit sample, so 512 frames = 1024 int32_t
+// values and yields 256 usable mono samples (~16ms at 16 kHz).
 static const size_t i2s_read_frames = 512;
 
 static i2s_chan_handle_t i2s_rx_channel = nullptr;
@@ -365,7 +365,7 @@ static bool i2s_init() {
   i2s_std_config_t std_config = {
       .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
       .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
-                                                       I2S_SLOT_MODE_MONO),
+                                                       I2S_SLOT_MODE_STEREO),
       .gpio_cfg = {
           .mclk = I2S_GPIO_UNUSED,
           .bclk = (gpio_num_t)pin_i2s_sck,
@@ -446,14 +446,15 @@ static bool record_and_save() {
       break;
     }
 
-    // Each I2S frame is 32 bits wide; the INMP441 packs 24-bit audio
-    // left-justified so >> 16 yields a signed 16-bit sample.
-    static int32_t i2s_buf[i2s_read_frames];
+    // In stereo mode each frame has two 32-bit slots (left + right).
+    // The INMP441 outputs 24-bit audio left-justified in the left slot;
+    // >> 16 yields a signed 16-bit sample.
+    static int32_t i2s_buf[i2s_read_frames * 2];
     size_t bytes_read = 0;
 
     // Discard the first ~100ms of samples to skip the INMP441 startup
-    // transient. We read in full buffer increments and stop once we've
-    // thrown away enough samples.
+    // transient. In stereo mode each frame is two int32_t values (L+R),
+    // so divide by 2 to count mono samples.
     size_t discarded = 0;
     while (discarded < i2s_startup_discard_samples) {
       esp_err_t err = i2s_channel_read(i2s_rx_channel, i2s_buf, sizeof(i2s_buf),
@@ -462,7 +463,7 @@ static bool record_and_save() {
         Serial.printf("[rec] i2s_channel_read error %d in discard loop\r\n", err);
         break;
       }
-      discarded += bytes_read / sizeof(int32_t);
+      discarded += bytes_read / sizeof(int32_t) / 2;
     }
 
     unsigned long record_start_milliseconds = millis();
@@ -481,9 +482,9 @@ static bool record_and_save() {
         break;
       }
 
-      size_t frames = bytes_read / sizeof(int32_t);
-      for (size_t i = 0; i < frames; i++) {
-        // Top 16 bits of the 32-bit left-justified frame are the audio data.
+      size_t total_samples = bytes_read / sizeof(int32_t);
+      for (size_t i = 0; i < total_samples; i += 2) {
+        // Stereo interleave: even indices are left channel (INMP441 data).
         int16_t sample_16 = (int16_t)(i2s_buf[i] >> 16);
         uint8_t nibble = adpcm_encode_sample(sample_16, encoder_state);
         sample_count++;
