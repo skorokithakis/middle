@@ -3,6 +3,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <LittleFS.h>
+#include <driver/i2s_std.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
 // NimBLE API for direct notification calls with congestion retry. The Arduino
@@ -13,14 +14,19 @@
 #include <host/ble_hs_mbuf.h>
 
 static const int pin_button = 12;
-static const int pin_mic = 9;
-static const int pin_mic_power = 8;
 static const int pin_battery = 1;
 
+// INMP441 I2S pin assignments.
+static const int pin_i2s_sck = 4;
+static const int pin_i2s_ws = 5;
+static const int pin_i2s_sd = 6;
+
 static const int sample_rate = 16000;
-static const unsigned long sample_interval_microseconds = 1000000 / sample_rate;
 static const unsigned long minimum_recording_milliseconds = 1000;
-static const size_t microphone_startup_fade_samples = sample_rate / 200;
+
+// Samples to discard after I2S init to skip the INMP441's internal startup
+// transient (~100ms at 16 kHz).
+static const size_t i2s_startup_discard_samples = 1600;
 
 // IMA ADPCM step size table — indexed by step_index (0..88).
 static const int16_t adpcm_step_table[89] = {
@@ -206,10 +212,6 @@ static void set_status_led_off() {
 #endif
 }
 
-static void set_microphone_power(bool enabled) {
-  digitalWrite(pin_mic_power, enabled ? LOW : HIGH);
-}
-
 static bool ble_window_active() {
   return (long)(ble_active_until_milliseconds - millis()) > 0;
 }
@@ -230,7 +232,6 @@ static void configure_button_wakeup() {
 
 static void enter_deep_sleep() {
   set_status_led_off();
-  set_microphone_power(false);
   if (ble_advertising != nullptr) {
     ble_advertising->stop();
   }
@@ -346,9 +347,70 @@ static void update_file_count() {
   }
 }
 
+// Buffer size for each i2s_channel_read() call. 512 32-bit frames gives
+// ~32ms of audio per read, which is a comfortable granularity for the button
+// check and keeps DMA stalls negligible.
+static const size_t i2s_read_frames = 512;
+
+static i2s_chan_handle_t i2s_rx_channel = nullptr;
+
+static bool i2s_init() {
+  i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(
+      I2S_NUM_AUTO, I2S_ROLE_MASTER);
+  if (i2s_new_channel(&channel_config, nullptr, &i2s_rx_channel) != ESP_OK) {
+    Serial.printf("[rec] i2s_new_channel failed\r\n");
+    return false;
+  }
+
+  i2s_std_config_t std_config = {
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(sample_rate),
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_32BIT,
+                                                       I2S_SLOT_MODE_MONO),
+      .gpio_cfg = {
+          .mclk = I2S_GPIO_UNUSED,
+          .bclk = (gpio_num_t)pin_i2s_sck,
+          .ws   = (gpio_num_t)pin_i2s_ws,
+          .dout = I2S_GPIO_UNUSED,
+          .din  = (gpio_num_t)pin_i2s_sd,
+          .invert_flags = {
+              .mclk_inv = false,
+              .bclk_inv = false,
+              .ws_inv   = false,
+          },
+      },
+  };
+
+  if (i2s_channel_init_std_mode(i2s_rx_channel, &std_config) != ESP_OK) {
+    Serial.printf("[rec] i2s_channel_init_std_mode failed\r\n");
+    i2s_del_channel(i2s_rx_channel);
+    i2s_rx_channel = nullptr;
+    return false;
+  }
+
+  if (i2s_channel_enable(i2s_rx_channel) != ESP_OK) {
+    Serial.printf("[rec] i2s_channel_enable failed\r\n");
+    i2s_del_channel(i2s_rx_channel);
+    i2s_rx_channel = nullptr;
+    return false;
+  }
+
+  return true;
+}
+
+static void i2s_deinit() {
+  if (i2s_rx_channel != nullptr) {
+    i2s_channel_disable(i2s_rx_channel);
+    i2s_del_channel(i2s_rx_channel);
+    i2s_rx_channel = nullptr;
+  }
+}
+
 static bool record_and_save() {
-  set_microphone_power(true);
   bool recording_saved = false;
+
+  if (!i2s_init()) {
+    return false;
+  }
 
   do {
     if (!ensure_littlefs_ready()) {
@@ -384,6 +446,25 @@ static bool record_and_save() {
       break;
     }
 
+    // Each I2S frame is 32 bits wide; the INMP441 packs 24-bit audio
+    // left-justified so >> 16 yields a signed 16-bit sample.
+    static int32_t i2s_buf[i2s_read_frames];
+    size_t bytes_read = 0;
+
+    // Discard the first ~100ms of samples to skip the INMP441 startup
+    // transient. We read in full buffer increments and stop once we've
+    // thrown away enough samples.
+    size_t discarded = 0;
+    while (discarded < i2s_startup_discard_samples) {
+      esp_err_t err = i2s_channel_read(i2s_rx_channel, i2s_buf, sizeof(i2s_buf),
+                                       &bytes_read, portMAX_DELAY);
+      if (err != ESP_OK) {
+        Serial.printf("[rec] i2s_channel_read error %d in discard loop\r\n", err);
+        break;
+      }
+      discarded += bytes_read / sizeof(int32_t);
+    }
+
     unsigned long record_start_milliseconds = millis();
     uint32_t sample_count = 0;
     // Tracks whether we're holding an incomplete byte (the low nibble has
@@ -392,33 +473,30 @@ static bool record_and_save() {
     uint8_t packed_byte = 0;
 
     while (digitalRead(pin_button) == LOW && !writer_error) {
-      unsigned long sample_start_microseconds = micros();
-      uint16_t raw = analogRead(pin_mic);
-      uint8_t sample = (uint8_t)(raw >> 4);
-
-      if (sample_count < microphone_startup_fade_samples) {
-        int16_t centered = (int16_t)sample - 128;
-        int32_t scaled = (int32_t)centered * (int32_t)(sample_count + 1) /
-                         (int32_t)microphone_startup_fade_samples;
-        sample = (uint8_t)(scaled + 128);
+      esp_err_t err = i2s_channel_read(i2s_rx_channel, i2s_buf,
+                                       sizeof(i2s_buf), &bytes_read,
+                                       portMAX_DELAY);
+      if (err != ESP_OK) {
+        Serial.printf("[rec] i2s_channel_read error %d\r\n", err);
+        break;
       }
 
-      // Convert unsigned 8-bit to signed 16-bit for the ADPCM encoder.
-      int16_t sample_16 = ((int16_t)sample - 128) << 8;
-      uint8_t nibble = adpcm_encode_sample(sample_16, encoder_state);
-      sample_count++;
+      size_t frames = bytes_read / sizeof(int32_t);
+      for (size_t i = 0; i < frames; i++) {
+        // Top 16 bits of the 32-bit left-justified frame are the audio data.
+        int16_t sample_16 = (int16_t)(i2s_buf[i] >> 16);
+        uint8_t nibble = adpcm_encode_sample(sample_16, encoder_state);
+        sample_count++;
 
-      // Pack two nibbles per byte, low nibble first.
-      if (!nibble_pending) {
-        packed_byte = nibble & 0x0F;
-        nibble_pending = true;
-      } else {
-        packed_byte |= (nibble << 4);
-        ring_buffer_push(packed_byte);
-        nibble_pending = false;
-      }
-
-      while (micros() - sample_start_microseconds < sample_interval_microseconds) {
+        // Pack two nibbles per byte, low nibble first.
+        if (!nibble_pending) {
+          packed_byte = nibble & 0x0F;
+          nibble_pending = true;
+        } else {
+          packed_byte |= (nibble << 4);
+          ring_buffer_push(packed_byte);
+          nibble_pending = false;
+        }
       }
     }
 
@@ -449,7 +527,7 @@ static bool record_and_save() {
     update_file_count();
   } while (false);
 
-  set_microphone_power(false);
+  i2s_deinit();
   return recording_saved;
 }
 
@@ -616,9 +694,6 @@ static void start_ble_if_needed() {
 }
 
 void setup() {
-  pinMode(pin_mic_power, OUTPUT);
-  set_microphone_power(true);
-
   set_status_led_off();
 
   pinMode(pin_button, INPUT_PULLUP);
