@@ -172,7 +172,7 @@ static const char *characteristic_voltage_uuid =
 static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
-static const unsigned long ble_keepalive_milliseconds = 7000;
+static const unsigned long ble_keepalive_milliseconds = 10000;
 
 static BLEServer *ble_server = nullptr;
 static BLECharacteristic *file_count_characteristic = nullptr;
@@ -189,6 +189,7 @@ static bool littlefs_ready = false;
 static bool littlefs_mount_attempted = false;
 static String current_stream_path = "";
 static unsigned long ble_active_until_milliseconds = 0;
+static unsigned long hard_sleep_deadline_milliseconds = 0;
 
 static String normalize_path(const char *name) {
   if (name == nullptr) {
@@ -221,7 +222,10 @@ static void start_ble_advertising() {
     return;
   }
   ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
-  ble_advertising->start();
+  hard_sleep_deadline_milliseconds = millis() + 30000;
+  if (!ble_advertising->start()) {
+    Serial.printf("[ble] advertising start failed\r\n");
+  }
 }
 
 static void configure_button_wakeup() {
@@ -623,6 +627,7 @@ static uint16_t read_battery_millivolts() {
 class server_callbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     client_connected = true;
+    ble_active_until_milliseconds = millis() + ble_keepalive_milliseconds;
   }
 
   void onDisconnect(BLEServer *server) override {
@@ -647,6 +652,8 @@ class command_callbacks : public BLECharacteristicCallbacks {
 
 static void init_ble() {
   BLEDevice::init("Middle");
+  BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_ADV);
+  BLEDevice::setPower(ESP_PWR_LVL_P9, ESP_BLE_PWR_TYPE_DEFAULT);
   BLEDevice::setMTU(517);
   ble_server = BLEDevice::createServer();
   ble_server->setCallbacks(new server_callbacks());
@@ -754,6 +761,11 @@ void loop() {
       }
       update_file_count();
     }
+  }
+
+  if (button_state == HIGH && hard_sleep_deadline_milliseconds != 0 &&
+      (long)(millis() - hard_sleep_deadline_milliseconds) >= 0) {
+    enter_deep_sleep();
   }
 
   if (sleep_requested ||

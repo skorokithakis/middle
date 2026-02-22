@@ -81,7 +81,7 @@ An LM393-based "sound sensor" module outputs only a digital HIGH/LOW when sound 
 |---|---|---|---|
 | Deep sleep | ~7µA | 99.9% of time | ESP32-S3 with ext_wakeup configured |
 | Recording (ADC + flash write) | ~50mA | Seconds (length of speech) | ADC sampling + ADPCM encode + LittleFS writes |
-| BLE advertising | ~80–100mA | ~5 seconds after recording | Advertising and optional data transfer |
+| BLE advertising | ~80–100mA | ~10 seconds after recording | Advertising and optional data transfer |
 | BLE transfer | ~80–100mA | Seconds (depends on file count/size) | Only if phone connects |
 
 On a 110mAh battery, standby alone lasts over a year. The active budget is roughly 300–400 recording+sync cycles per charge, assuming ~15 seconds awake per cycle at ~100mA average.
@@ -96,7 +96,7 @@ On a 110mAh battery, standby alone lasts over a year. The active budget is rough
 [Deep Sleep] → button press → [Wake] → [Record ADPCM to flash] → button release →
   → if duration >= 1000ms: recording kept on flash (LittleFS)
   → if duration < 1000ms: discard (treat as sync-only tap)
-→ [Start BLE advertising, 5 second window]
+→ [Start BLE advertising, 10 second window]
   → if phone connects: sync all pending recordings → delete synced files
   → if no connection: recordings remain on flash for next time
 → [Deep Sleep]
@@ -156,7 +156,7 @@ The entire firmware runs in `setup()`. The `loop()` function is never reached �
 
 **Timeouts:**
 
-- BLE advertising window: 5 seconds (if no connection, go to sleep).
+- BLE advertising window: 10 seconds (if no connection, go to sleep).
 - Sync session timeout: 30 seconds (safety net to avoid draining the battery if something hangs).
 
 **MTU**: The firmware requests an MTU of 517 (the BLE maximum). After negotiation, audio chunks use the full negotiated payload size (MTU minus 3 bytes of ATT header), typically 244–509 bytes per packet.
