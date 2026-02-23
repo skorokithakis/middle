@@ -13,13 +13,13 @@
 #include <host/ble_gatt.h>
 #include <host/ble_hs_mbuf.h>
 
-static const int pin_button = 12;
+static const int pin_button = 2;
 static const int pin_battery = 1;
 
 // INMP441 I2S pin assignments.
-static const int pin_i2s_sck = 4;
+static const int pin_i2s_sck = 6;
 static const int pin_i2s_ws = 5;
-static const int pin_i2s_sd = 6;
+static const int pin_i2s_sd = 13;
 
 static const int sample_rate = 16000;
 static const unsigned long minimum_recording_milliseconds = 1000;
