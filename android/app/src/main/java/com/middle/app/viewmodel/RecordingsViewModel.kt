@@ -13,6 +13,7 @@ import com.middle.app.data.Settings
 import com.middle.app.data.WebhookClient
 import com.middle.app.data.WebhookLog
 import com.middle.app.data.WebhookRetryQueue
+import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -67,12 +68,30 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     val webhookEnabled: Boolean
         get() = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
 
+    val transcriptionAvailable: Boolean
+        get() = settings.transcriptionEnabled && settings.openAiApiKey.trim().isNotEmpty()
+
     fun sendWebhook(recording: Recording) {
-        val transcript = recording.transcriptText ?: return
         val webhookUrl = settings.webhookUrl.trim()
         if (!settings.webhookEnabled || webhookUrl.isEmpty()) return
 
         viewModelScope.launch(Dispatchers.IO) {
+            val existingTranscript = recording.transcriptText
+            val transcript: String
+            if (existingTranscript == null) {
+                val apiKey = settings.openAiApiKey.trim()
+                val transcribed = TranscriptionClient(apiKey).transcribe(recording.audioFile)
+                if (transcribed == null) {
+                    Log.w(TAG, "Transcription failed for ${recording.audioFile.name}, skipping webhook.")
+                    showToast("Transcription failed")
+                    return@launch
+                }
+                repository.saveTranscript(transcribed, recording.audioFile)
+                transcript = transcribed
+            } else {
+                transcript = existingTranscript
+            }
+
             val template = settings.webhookBodyTemplate.ifBlank {
                 Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
             }

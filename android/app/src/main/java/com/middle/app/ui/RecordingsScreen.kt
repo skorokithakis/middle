@@ -172,7 +172,7 @@ fun RecordingsScreen(
                             isPlaying = currentlyPlaying == recording,
                             onTogglePlayback = { viewModel.togglePlayback(recording) },
                             onDelete = { viewModel.deleteRecording(recording) },
-                            showResendWebhook = viewModel.webhookEnabled && recording.hasTranscript,
+                            showResendWebhook = viewModel.webhookEnabled && (recording.hasTranscript || viewModel.transcriptionAvailable),
                             onResendWebhook = { viewModel.sendWebhook(recording) },
                         )
                     }
