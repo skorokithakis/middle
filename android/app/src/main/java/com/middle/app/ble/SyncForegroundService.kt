@@ -125,7 +125,7 @@ class SyncForegroundService : Service() {
         }
 
         return ScanProfile(
-            scanMode = ScanSettings.SCAN_MODE_LOW_POWER,
+            scanMode = ScanSettings.SCAN_MODE_LOW_LATENCY,
             windowMillis = BACKGROUND_SCAN_WINDOW_MILLIS,
             periodMillis = BACKGROUND_SCAN_PERIOD_MILLIS,
         )
