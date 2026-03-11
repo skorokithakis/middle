@@ -17,6 +17,7 @@
 
 static const int pin_button = 2;
 static const int pin_battery = 1;
+static const int pin_mic_power = 10;
 
 // INMP441 I2S pin assignments.
 static const int pin_i2s_sck = 6;
@@ -433,7 +434,10 @@ static void i2s_deinit() {
 static bool record_and_save() {
   bool recording_saved = false;
 
+  digitalWrite(pin_mic_power, HIGH);
+
   if (!i2s_init()) {
+    digitalWrite(pin_mic_power, LOW);
     return false;
   }
 
@@ -554,6 +558,7 @@ static bool record_and_save() {
   } while (false);
 
   i2s_deinit();
+  digitalWrite(pin_mic_power, LOW);
   return recording_saved;
 }
 
@@ -848,6 +853,8 @@ void setup() {
   set_status_led_off();
 
   pinMode(pin_button, INPUT_PULLUP);
+  pinMode(pin_mic_power, OUTPUT);
+  digitalWrite(pin_mic_power, LOW);
 
   // NVS must be initialized before any NVS reads, including the pairing token
   // check in init_ble(). nvs_flash_init() is safe to call on every boot.
