@@ -43,6 +43,7 @@ COMMAND_REQUEST_NEXT = bytes([0x01])
 COMMAND_ACK_RECEIVED = bytes([0x02])
 COMMAND_SYNC_DONE = bytes([0x03])
 COMMAND_START_STREAM = bytes([0x04])
+COMMAND_ENTER_BOOTLOADER = bytes([0x05])
 
 SAMPLE_RATE = 16000
 NUMBER_OF_CHANNELS = 1
@@ -413,9 +414,8 @@ async def sync_recordings(
     return synced, saved_recordings
 
 
-async def main(token_hex: str | None = None) -> None:
+async def main(token_hex: str | None = None, bootloader: bool = False) -> None:
     log("Middle BLE sync client started.")
-    log(f"Recordings will be saved to: {RECORDINGS_DIRECTORY}")
     log(f"Scanning for pendant (service {SERVICE_UUID})...")
 
     scan_count = 0
@@ -435,8 +435,6 @@ async def main(token_hex: str | None = None) -> None:
         log(f"Found pendant: {device.name} ({device.address}).")
         log("Connecting...")
 
-        saved_recordings: list[Path] = []
-        openai_client = create_openai_client()
         try:
             async with BleakClient(device, timeout=10) as client:
                 log(f"Connected (MTU: {client.mtu_size}).")
@@ -444,6 +442,16 @@ async def main(token_hex: str | None = None) -> None:
                 if not paired:
                     log("Pairing failed, disconnecting.")
                     continue
+
+                if bootloader:
+                    await client.write_gatt_char(
+                        CHARACTERISTIC_COMMAND_UUID, COMMAND_ENTER_BOOTLOADER
+                    )
+                    log("Device is entering bootloader mode.")
+                    return
+
+                openai_client = create_openai_client()
+                log(f"Recordings will be saved to: {RECORDINGS_DIRECTORY}")
                 synced, saved_recordings = await sync_recordings(
                     client,
                     openai_client,
@@ -472,6 +480,11 @@ if __name__ == "__main__":
         default=None,
         help="32-character hex pairing token.",
     )
+    parser.add_argument(
+        "--bootloader",
+        action="store_true",
+        help="Send the enter-bootloader command and exit.",
+    )
     args = parser.parse_args()
 
     if args.token is not None:
@@ -481,4 +494,4 @@ if __name__ == "__main__":
             print("Error: --token must be exactly 32 hexadecimal characters.")
             raise SystemExit(1)
 
-    asyncio.run(main(token_hex=args.token))
+    asyncio.run(main(token_hex=args.token, bootloader=args.bootloader))

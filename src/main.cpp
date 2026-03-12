@@ -7,6 +7,7 @@
 #include <driver/i2s_std.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
+#include <soc/rtc_cntl_reg.h>
 // NimBLE API for direct notification calls with congestion retry. The Arduino
 // BLE wrapper calls ble_gatts_notify_custom but silently aborts on non-zero
 // return (e.g. BLE_HS_ENOMEM when the mbuf pool is exhausted). We call it
@@ -187,6 +188,7 @@ static const uint8_t command_request_next = 0x01;
 static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
 static const uint8_t command_start_stream = 0x04;
+static const uint8_t command_enter_bootloader = 0x05;
 
 static const unsigned long ble_keepalive_milliseconds = 10000;
 
@@ -1010,6 +1012,12 @@ void loop() {
       }
       update_file_count();
     } else if (command == command_sync_done) {
+    } else if (command == command_enter_bootloader) {
+      // Set the ROM download mode flag before restarting so the bootloader
+      // stays in USB/UART download mode rather than booting the application.
+      // This allows flashing without physical access to the boot button.
+      REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+      esp_restart();
     }
   }
 
