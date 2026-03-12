@@ -3,6 +3,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <LittleFS.h>
+#include <driver/gpio.h>
 #include <driver/i2s_std.h>
 #include <driver/rtc_io.h>
 #include <esp_sleep.h>
@@ -301,6 +302,11 @@ static void enter_deep_sleep() {
     ble_advertising->stop();
   }
   delay(20);
+  // Hold the mic power pin LOW during deep sleep so the INMP441's internal
+  // pull-up cannot draw current while the chip is sleeping. Without this hold,
+  // the pin floats and the pull-up draws ~1.4 mA continuously.
+  gpio_hold_en((gpio_num_t)pin_mic_power);
+  gpio_deep_sleep_hold_en();
   esp_deep_sleep_start();
 }
 
@@ -922,6 +928,10 @@ void setup() {
 #endif
 
   pinMode(pin_button, INPUT_PULLUP);
+  // Release the GPIO hold set in enter_deep_sleep() before reconfiguring the
+  // pin. If the hold is still active, pinMode() fights the latched state.
+  gpio_hold_dis((gpio_num_t)pin_mic_power);
+  gpio_deep_sleep_hold_dis();
   pinMode(pin_mic_power, OUTPUT);
   digitalWrite(pin_mic_power, LOW);
 
