@@ -5,13 +5,16 @@ import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCharacteristic
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import no.nordicsemi.android.ble.BleManager
 import no.nordicsemi.android.ble.data.Data
 import no.nordicsemi.android.ble.ktx.suspend
+import no.nordicsemi.android.ble.observer.ConnectionObserver
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicReference
@@ -32,6 +35,24 @@ class PendantBleManager(context: Context) : BleManager(context) {
     // Holds the active transfer state so the notification callback (set once per
     // session) can write to whichever file is currently being received.
     private val activeTransfer = AtomicReference<TransferState?>(null)
+
+    init {
+        // Fail the active transfer immediately on disconnect rather than waiting
+        // for the 45s TRANSFER_TOTAL_TIMEOUT_MILLIS to expire. The library calls
+        // onDeviceDisconnected on the main thread; completeExceptionally is thread-safe.
+        setConnectionObserver(object : ConnectionObserver {
+            override fun onDeviceDisconnected(device: BluetoothDevice, reason: Int) {
+                activeTransfer.get()?.deferred?.completeExceptionally(
+                    IOException("Pendant disconnected during transfer")
+                )
+            }
+            override fun onDeviceConnecting(device: BluetoothDevice) = Unit
+            override fun onDeviceConnected(device: BluetoothDevice) = Unit
+            override fun onDeviceFailedToConnect(device: BluetoothDevice, reason: Int) = Unit
+            override fun onDeviceReady(device: BluetoothDevice) = Unit
+            override fun onDeviceDisconnecting(device: BluetoothDevice) = Unit
+        })
+    }
 
     private data class TransferState(
         val buffer: ByteArrayOutputStream,
@@ -80,7 +101,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
             .timeout(10_000)
             .useAutoConnect(false)
             .suspend()
-        requestMtu(REQUESTED_MTU).suspend()
+        withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { requestMtu(REQUESTED_MTU).suspend() }
     }
 
     /**
@@ -90,7 +111,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
     suspend fun readPairingStatus(): Int {
         val characteristic = pairingCharacteristic
             ?: throw IllegalStateException("Not connected or service not discovered.")
-        val data = readCharacteristic(characteristic).suspend()
+        val data = withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { readCharacteristic(characteristic).suspend() }
         return (data.value?.firstOrNull()?.toInt() ?: 0) and 0xFF
     }
 
@@ -102,17 +123,19 @@ class PendantBleManager(context: Context) : BleManager(context) {
     suspend fun writePairingToken(token: ByteArray) {
         val characteristic = pairingCharacteristic
             ?: throw IllegalStateException("Not connected or service not discovered.")
-        writeCharacteristic(
-            characteristic,
-            token,
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-        ).suspend()
+        withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) {
+            writeCharacteristic(
+                characteristic,
+                token,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            ).suspend()
+        }
     }
 
     suspend fun readFileCount(): Int {
         val characteristic = fileCountCharacteristic
             ?: throw IllegalStateException("Not connected or service not discovered.")
-        val data = readCharacteristic(characteristic).suspend()
+        val data = withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { readCharacteristic(characteristic).suspend() }
         return ByteBuffer.wrap(data.value!!)
             .order(ByteOrder.LITTLE_ENDIAN)
             .short
@@ -122,7 +145,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
     suspend fun readFileInfo(): Int {
         val characteristic = fileInfoCharacteristic
             ?: throw IllegalStateException("Not connected or service not discovered.")
-        val data = readCharacteristic(characteristic).suspend()
+        val data = withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { readCharacteristic(characteristic).suspend() }
         return ByteBuffer.wrap(data.value!!)
             .order(ByteOrder.LITTLE_ENDIAN)
             .int
@@ -135,7 +158,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
      */
     suspend fun readVoltageMillivolts(): Int? {
         val characteristic = voltageCharacteristic ?: return null
-        val data = readCharacteristic(characteristic).suspend()
+        val data = withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { readCharacteristic(characteristic).suspend() }
         return ByteBuffer.wrap(data.value!!)
             .order(ByteOrder.LITTLE_ENDIAN)
             .short
@@ -145,11 +168,13 @@ class PendantBleManager(context: Context) : BleManager(context) {
     private suspend fun writeCommand(command: Byte) {
         val characteristic = commandCharacteristic
             ?: throw IllegalStateException("Not connected or service not discovered.")
-        writeCharacteristic(
-            characteristic,
-            byteArrayOf(command),
-            BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
-        ).suspend()
+        withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) {
+            writeCharacteristic(
+                characteristic,
+                byteArrayOf(command),
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            ).suspend()
+        }
     }
 
     /**
@@ -169,7 +194,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
                 state.deferred.complete(state.buffer.toByteArray())
             }
         }
-        enableNotifications(audioCharacteristic).suspend()
+        withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { enableNotifications(audioCharacteristic).suspend() }
     }
 
     /**
@@ -179,7 +204,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
      */
     suspend fun disableAudioNotifications() {
         val audioCharacteristic = audioDataCharacteristic ?: return
-        disableNotifications(audioCharacteristic).suspend()
+        withTimeout(GATT_OPERATION_TIMEOUT_MILLIS) { disableNotifications(audioCharacteristic).suspend() }
     }
 
     /**
@@ -204,45 +229,48 @@ class PendantBleManager(context: Context) : BleManager(context) {
             activeTransfer.set(TransferState(buffer, transferComplete, 0))
 
             try {
-                writeCommand(COMMAND_REQUEST_NEXT)
-
-                // Brief pause for the pendant to prepare the file info,
-                // matching the 100ms sleep in sync.py.
-                kotlinx.coroutines.delay(100)
-
-                val expectedSize = readFileInfo()
-                Log.d(TAG, "Expecting $expectedSize bytes.")
-
-                // Empty files are corrupt or aborted recordings. Return null
-                // immediately rather than retrying.
-                if (expectedSize == 0) {
-                    Log.w(TAG, "File is empty, skipping.")
-                    return null
-                }
-
-                // Update expectedSize in the active state so the callback can
-                // complete the deferred once enough bytes have arrived.
-                activeTransfer.set(TransferState(buffer, transferComplete, expectedSize))
-
-                // If chunks arrived before we updated expectedSize, check now.
-                if (buffer.size() >= expectedSize) {
-                    return buffer.toByteArray().copyOfRange(0, expectedSize)
-                }
-
-                // Tell the firmware to begin the notification stream now that
-                // the GATT read of file_info is complete. Sending this before
-                // the read would race notifications against the read response.
-                writeCommand(COMMAND_START_STREAM)
-                Log.d(TAG, "[SyncDebug] START_STREAM sent.")
-
                 val result = withTimeout(TRANSFER_TOTAL_TIMEOUT_MILLIS) {
-                    transferComplete.await()
+                    writeCommand(COMMAND_REQUEST_NEXT)
+
+                    // Brief pause for the pendant to prepare the file info,
+                    // matching the 100ms sleep in sync.py.
+                    kotlinx.coroutines.delay(100)
+
+                    val expectedSize = readFileInfo()
+                    Log.d(TAG, "Expecting $expectedSize bytes.")
+
+                    // Empty files are corrupt or aborted recordings; signal null
+                    // so the caller can skip without retrying.
+                    if (expectedSize == 0) {
+                        Log.w(TAG, "File is empty, skipping.")
+                        return@withTimeout null
+                    }
+
+                    // Update expectedSize in the active state so the callback can
+                    // complete the deferred once enough bytes have arrived.
+                    activeTransfer.set(TransferState(buffer, transferComplete, expectedSize))
+
+                    // If chunks arrived before we updated expectedSize, check now.
+                    if (buffer.size() >= expectedSize) {
+                        return@withTimeout buffer.toByteArray().copyOfRange(0, expectedSize)
+                    }
+
+                    // Tell the firmware to begin the notification stream now that
+                    // the GATT read of file_info is complete. Sending this before
+                    // the read would race notifications against the read response.
+                    writeCommand(COMMAND_START_STREAM)
+                    Log.d(TAG, "[SyncDebug] START_STREAM sent.")
+
+                    val data = transferComplete.await()
+                    Log.d(TAG, "[SyncDebug] transferComplete.await() returned ${data.size} bytes received.")
+                    data.copyOfRange(0, expectedSize)
                 }
-                Log.d(TAG, "[SyncDebug] transferComplete.await() returned ${result.size} bytes received.")
-                return result.copyOfRange(0, expectedSize)
-            } catch (exception: TimeoutCancellationException) {
+                // null means the file was empty — return immediately without retrying.
+                return result
+            } catch (exception: Exception) {
+                if (exception is CancellationException && exception !is TimeoutCancellationException) throw exception
                 val expectedSize = activeTransfer.get()?.expectedSize ?: 0
-                Log.w(TAG, "[SyncDebug] Transfer timed out: received ${buffer.size()} of $expectedSize bytes.")
+                Log.w(TAG, "[SyncDebug] Transfer failed: received ${buffer.size()} of $expectedSize bytes. $exception")
             } finally {
                 activeTransfer.set(null)
             }
