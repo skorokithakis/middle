@@ -9,7 +9,7 @@
 
 ## repository facts discovered
 - Build system: PlatformIO (`platformio.ini`).
-- Firmware environment: `esp32-s3-devkitc-1`.
+- Firmware environment: `seeed_xiao_esp32s3`.
 - Python runtime pattern: shebang with inline `uv` script metadata.
 - No dedicated test suite is currently present.
 - No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` files were found.
@@ -24,17 +24,17 @@
 
 ## firmware commands (platformio)
 - Install PlatformIO Core if missing: `pipx install platformio` or equivalent.
-- Build firmware: `pio run -e esp32-s3-devkitc-1`.
-- Build and upload firmware over USB: `pio run -e esp32-s3-devkitc-1 -t upload`.
+- Build firmware: `pio run -e seeed_xiao_esp32s3`.
+- Build and upload firmware over USB: `pio run -e seeed_xiao_esp32s3 -t upload`.
 - Open serial monitor: `pio device monitor -b 115200`.
-- Upload filesystem image (LittleFS): `pio run -e esp32-s3-devkitc-1 -t uploadfs`.
-- Clean build artifacts: `pio run -e esp32-s3-devkitc-1 -t clean`.
+- Upload filesystem image (LittleFS): `pio run -e seeed_xiao_esp32s3 -t uploadfs`.
+- Clean build artifacts: `pio run -e seeed_xiao_esp32s3 -t clean`.
 - Print detected serial devices: `pio device list`.
 
 ## static analysis and linting
 - There is no configured formatter or linter config checked into this repo.
 - Use PlatformIO static checks for firmware when needed:
-- `pio check -e esp32-s3-devkitc-1`.
+- `pio check -e seeed_xiao_esp32s3`.
 - If you add a formatter or linter, document exact commands here.
 
 ## python script commands
@@ -45,8 +45,8 @@
 ## test commands
 - Current state: no automated tests are present.
 - Firmware test harness command (if tests are added under PlatformIO):
-- Run all firmware tests: `pio test -e esp32-s3-devkitc-1`.
-- Run a single firmware test by name: `pio test -e esp32-s3-devkitc-1 -f <test_name>`.
+- Run all firmware tests: `pio test -e seeed_xiao_esp32s3`.
+- Run a single firmware test by name: `pio test -e seeed_xiao_esp32s3 -f <test_name>`.
 - Python test harness command (if `pytest` is added):
 - Run all python tests: `uv run pytest`.
 - Run a single test file: `uv run pytest tests/test_sync.py`.
@@ -139,7 +139,7 @@
 - If introducing a dependency, document why and how to run affected commands.
 
 ## validation checklist before finishing
-- Firmware compiles: `pio run -e esp32-s3-devkitc-1`.
+- Firmware compiles: `pio run -e seeed_xiao_esp32s3`.
 - If firmware protocol touched, verify matching constants in `sync.py`.
 - If python code touched, run `uv run python -m py_compile sync.py`.
 - If tests exist for touched area, run them.
