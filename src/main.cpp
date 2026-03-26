@@ -189,6 +189,7 @@ static const uint8_t command_ack_received = 0x02;
 static const uint8_t command_sync_done = 0x03;
 static const uint8_t command_start_stream = 0x04;
 static const uint8_t command_enter_bootloader = 0x05;
+static const uint8_t command_erase_pair_token = 0x06;
 
 static const unsigned long ble_keepalive_milliseconds = 10000;
 
@@ -793,6 +794,27 @@ static bool nvs_write_pair_token(const uint8_t token[pairing_token_length]) {
   return true;
 }
 
+// Erases the pair token from NVS, unpairing the pendant.
+static bool nvs_erase_pair_token() {
+  nvs_handle_t handle;
+  esp_err_t err = nvs_open(nvs_namespace, NVS_READWRITE, &handle);
+  if (err != ESP_OK) {
+    DBG("[ble] nvs_open erase failed: %d\r\n", err);
+    return false;
+  }
+  err = nvs_erase_key(handle, nvs_key_pair_token);
+  if (err == ESP_OK) {
+    err = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  // ESP_ERR_NVS_NOT_FOUND means the key was already absent, which is fine.
+  if (err != ESP_OK && err != ESP_ERR_NVS_NOT_FOUND) {
+    DBG("[ble] nvs_erase_key/commit failed: %d\r\n", err);
+    return false;
+  }
+  return true;
+}
+
 class server_callbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     client_connected = true;
@@ -1018,6 +1040,50 @@ void loop() {
       // This allows flashing without physical access to the boot button.
       REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
       esp_restart();
+    } else if (command == command_erase_pair_token) {
+      DBG("[ble] erasing pair token\r\n");
+      // Close any open stream handle before erasing — LittleFS.remove() fails
+      // on a file that still has an open handle.
+      if (pending_stream_file) {
+        pending_stream_file.close();
+      }
+      current_stream_path = "";
+      if (!nvs_erase_pair_token()) {
+        // Do not delete recordings if the token erase failed — that would leave
+        // the pendant in a state where recordings are gone but it is still paired.
+        DBG("[ble] aborting erase: token erase failed\r\n");
+      } else {
+        DBG("[flash] deleting all recordings\r\n");
+        if (ensure_littlefs_ready()) {
+          // Loop until no recordings remain, collecting paths before deleting to
+          // avoid modifying the filesystem while iterating (same pattern as
+          // remove_empty_recordings). One pass may not be enough if there are
+          // more recordings than the buffer can hold.
+          bool found = true;
+          while (found) {
+            found = false;
+            File root = LittleFS.open("/");
+            File entry = root.openNextFile();
+            String to_remove[32];
+            int remove_count = 0;
+            while (entry && remove_count < 32) {
+              String name = String(entry.name());
+              if (parse_recording_id(name) >= 0) {
+                to_remove[remove_count++] = normalize_path(entry.name());
+                found = true;
+              }
+              entry = root.openNextFile();
+            }
+            for (int i = 0; i < remove_count; i++) {
+              bool removed = LittleFS.remove(to_remove[i]);
+              DBG("[flash] remove %s: %s\r\n", to_remove[i].c_str(), removed ? "OK" : "FAILED");
+            }
+          }
+          update_file_count();
+        }
+      }
+      DBG("[ble] disconnecting after erase\r\n");
+      ble_server->disconnect(ble_server->getConnId());
     }
   }
 

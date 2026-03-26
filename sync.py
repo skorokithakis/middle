@@ -44,6 +44,7 @@ COMMAND_ACK_RECEIVED = bytes([0x02])
 COMMAND_SYNC_DONE = bytes([0x03])
 COMMAND_START_STREAM = bytes([0x04])
 COMMAND_ENTER_BOOTLOADER = bytes([0x05])
+COMMAND_ERASE_PAIRING = bytes([0x06])
 
 SAMPLE_RATE = 16000
 NUMBER_OF_CHANNELS = 1
@@ -414,7 +415,7 @@ async def sync_recordings(
     return synced, saved_recordings
 
 
-async def main(token_hex: str | None = None, bootloader: bool = False) -> None:
+async def main(token_hex: str | None = None, bootloader: bool = False, reset: bool = False) -> None:
     log("Middle BLE sync client started.")
     log(f"Scanning for pendant (service {SERVICE_UUID})...")
 
@@ -457,6 +458,13 @@ async def main(token_hex: str | None = None, bootloader: bool = False) -> None:
                     openai_client,
                 )
                 log(f"Sync complete, {synced} file(s) transferred.")
+
+                if reset:
+                    await client.write_gatt_char(
+                        CHARACTERISTIC_COMMAND_UUID, COMMAND_ERASE_PAIRING
+                    )
+                    log("Pendant pairing has been erased and the device has been reset.")
+                    return
         except TimeoutError:
             log("Connection attempt timed out. Pendant likely returned to sleep.")
             log("Resuming scan.")
@@ -485,6 +493,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Send the enter-bootloader command and exit.",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Sync recordings, erase pairing, and exit. Requires --token.",
+    )
     args = parser.parse_args()
 
     if args.token is not None:
@@ -494,4 +507,12 @@ if __name__ == "__main__":
             print("Error: --token must be exactly 32 hexadecimal characters.")
             raise SystemExit(1)
 
-    asyncio.run(main(token_hex=args.token, bootloader=args.bootloader))
+    if args.bootloader and args.reset:
+        print("Error: --bootloader and --reset are mutually exclusive.")
+        raise SystemExit(1)
+
+    if args.reset and args.token is None:
+        print("Error: --reset requires --token.")
+        raise SystemExit(1)
+
+    asyncio.run(main(token_hex=args.token, bootloader=args.bootloader, reset=args.reset))
