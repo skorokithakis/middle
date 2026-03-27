@@ -127,6 +127,49 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun transcribeRecording(recording: Recording) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val provider = settings.transcriptionProvider
+            val apiKey = getSelectedProviderApiKey()
+            val client = TranscriptionClient(provider, apiKey)
+            showToast("Transcribing ${recording.audioFile.name}…")
+            try {
+                val text = client.transcribe(recording.audioFile)
+                if (text != null) {
+                    repository.saveTranscript(text, recording.audioFile)
+                    showToast("Transcription complete")
+                } else {
+                    showToast("Transcription failed (${providerDisplayName(provider)})")
+                }
+            } catch (exception: Exception) {
+                Log.e(TAG, "Transcription failed for ${recording.audioFile.name}: $exception")
+                showToast("Transcription error: ${exception.message}")
+            }
+        }
+    }
+
+    fun transcribeRecordings(toTranscribe: List<Recording>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val provider = settings.transcriptionProvider
+            val apiKey = getSelectedProviderApiKey()
+            val client = TranscriptionClient(provider, apiKey)
+            showToast("Transcribing ${toTranscribe.size} recording(s)…")
+            var successCount = 0
+            for (recording in toTranscribe) {
+                try {
+                    val text = client.transcribe(recording.audioFile)
+                    if (text != null) {
+                        repository.saveTranscript(text, recording.audioFile)
+                        successCount++
+                    }
+                } catch (exception: Exception) {
+                    Log.e(TAG, "Transcription failed for ${recording.audioFile.name}: $exception")
+                }
+            }
+            showToast("Transcribed $successCount of ${toTranscribe.size}")
+        }
+    }
+
     fun deleteRecording(recording: Recording) {
         if (_currentlyPlaying.value == recording) {
             stopPlayback()
@@ -134,6 +177,16 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(Dispatchers.IO) {
             retryQueue.removeForRecording(recording.audioFile.name)
             repository.deleteRecording(recording)
+        }
+    }
+
+    fun deleteRecordings(toDelete: List<Recording>) {
+        toDelete.forEach { if (_currentlyPlaying.value == it) stopPlayback() }
+        viewModelScope.launch(Dispatchers.IO) {
+            toDelete.forEach {
+                retryQueue.removeForRecording(it.audioFile.name)
+                repository.deleteRecording(it)
+            }
         }
     }
 
