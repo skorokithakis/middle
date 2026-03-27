@@ -7,4 +7,7 @@
     <string name="sync_notification_connecting">Connecting to pendant…</string>
     <string name="sync_notification_syncing">Syncing recordings…</string>
     <string name="sync_notification_idle">Background sync active</string>
+    <string name="battery_low_notification_channel">Battery alerts</string>
+    <string name="battery_low_notification_title">Pendant battery low</string>
+    <string name="battery_low_notification_text">Please charge your pendant soon.</string>
 </resources>

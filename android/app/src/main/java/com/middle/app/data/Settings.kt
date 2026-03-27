@@ -52,6 +52,10 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_LAST_BATTERY_VOLTAGE, "N/A") ?: "N/A"
         set(value) = prefs.edit().putString(KEY_LAST_BATTERY_VOLTAGE, value).apply()
 
+    var lastBatteryNotificationTime: Long
+        get() = prefs.getLong(KEY_LAST_BATTERY_NOTIFICATION_TIME, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_BATTERY_NOTIFICATION_TIME, value).apply()
+
     var pairedDeviceAddress: String
         get() = prefs.getString(KEY_PAIRED_DEVICE_ADDRESS, "") ?: ""
         set(value) = prefs.edit().putString(KEY_PAIRED_DEVICE_ADDRESS, value).apply()
@@ -83,6 +87,7 @@ class Settings(context: Context) {
         private const val KEY_WEBHOOK_URL = "webhook_url"
         private const val KEY_WEBHOOK_BODY_TEMPLATE = "webhook_body_template"
         private const val KEY_LAST_BATTERY_VOLTAGE = "last_battery_voltage"
+        private const val KEY_LAST_BATTERY_NOTIFICATION_TIME = "last_battery_notification_time"
         private const val KEY_PAIRED_DEVICE_ADDRESS = "paired_device_address"
         private const val KEY_PAIRING_TOKEN = "pairing_token"
         const val DEFAULT_WEBHOOK_BODY_TEMPLATE = "{\"phrase\": \"\$transcript\"}"

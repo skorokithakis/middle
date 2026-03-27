@@ -1,5 +1,6 @@
 package com.middle.app.ble
 
+import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
@@ -224,6 +225,7 @@ class SyncForegroundService : Service() {
                 _batteryVoltage.value = formatted
                 settings.lastBatteryVoltage = formatted
                 Log.d(TAG, "Battery voltage: $formatted ($millivolts mV)")
+                maybePostBatteryLowNotification(millivolts)
             } else {
                 _batteryVoltage.value = "N/A"
                 settings.lastBatteryVoltage = "N/A"
@@ -352,6 +354,23 @@ class SyncForegroundService : Service() {
         }
     }
 
+    private fun maybePostBatteryLowNotification(millivolts: Int) {
+        if (millivolts >= BATTERY_LOW_THRESHOLD_MV) return
+        val now = System.currentTimeMillis()
+        if (now - settings.lastBatteryNotificationTime < BATTERY_LOW_DEBOUNCE_MS) return
+
+        val notification = NotificationCompat.Builder(this, MiddleApplication.BATTERY_LOW_CHANNEL_ID)
+            .setContentTitle(getString(R.string.battery_low_notification_title))
+            .setContentText(getString(R.string.battery_low_notification_text))
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setAutoCancel(true)
+            .build()
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(MiddleApplication.BATTERY_LOW_NOTIFICATION_ID, notification)
+        settings.lastBatteryNotificationTime = now
+        Log.d(TAG, "Battery low notification posted ($millivolts mV).")
+    }
+
     private fun generatePairingToken(): ByteArray {
         val bytes = ByteArray(16)
         SecureRandom().nextBytes(bytes)
@@ -382,6 +401,9 @@ class SyncForegroundService : Service() {
 
     companion object {
         private const val TAG = "SyncService"
+
+        private const val BATTERY_LOW_THRESHOLD_MV = 3800
+        private const val BATTERY_LOW_DEBOUNCE_MS = 6 * 60 * 60 * 1000L
 
         private val _syncState = MutableStateFlow("Idle")
         val syncState: StateFlow<String> = _syncState
