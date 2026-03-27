@@ -402,7 +402,7 @@ class SyncForegroundService : Service() {
     companion object {
         private const val TAG = "SyncService"
 
-        private const val BATTERY_LOW_THRESHOLD_MV = 3800
+        private const val BATTERY_LOW_THRESHOLD_MV = 3860
         private const val BATTERY_LOW_DEBOUNCE_MS = 6 * 60 * 60 * 1000L
 
         private val _syncState = MutableStateFlow("Idle")
