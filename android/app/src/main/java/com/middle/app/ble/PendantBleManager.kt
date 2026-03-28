@@ -229,48 +229,55 @@ class PendantBleManager(context: Context) : BleManager(context) {
             activeTransfer.set(TransferState(buffer, transferComplete, 0))
 
             try {
-                val result = withTimeout(TRANSFER_TOTAL_TIMEOUT_MILLIS) {
-                    writeCommand(COMMAND_REQUEST_NEXT)
+                writeCommand(COMMAND_REQUEST_NEXT)
 
-                    // Brief pause for the pendant to prepare the file info,
-                    // matching the 100ms sleep in sync.py.
-                    kotlinx.coroutines.delay(100)
+                // Brief pause for the pendant to prepare the file info,
+                // matching the 100ms sleep in sync.py.
+                kotlinx.coroutines.delay(100)
 
-                    val expectedSize = readFileInfo()
-                    Log.d(TAG, "Expecting $expectedSize bytes.")
+                val expectedSize = readFileInfo()
+                Log.d(TAG, "Expecting $expectedSize bytes.")
 
-                    // Empty files are corrupt or aborted recordings; signal null
-                    // so the caller can skip without retrying.
-                    if (expectedSize == 0) {
-                        Log.w(TAG, "File is empty, skipping.")
-                        return@withTimeout null
-                    }
-
-                    // Update expectedSize in the active state so the callback can
-                    // complete the deferred once enough bytes have arrived.
-                    activeTransfer.set(TransferState(buffer, transferComplete, expectedSize))
-
-                    // If chunks arrived before we updated expectedSize, check now.
-                    if (buffer.size() >= expectedSize) {
-                        return@withTimeout buffer.toByteArray().copyOfRange(0, expectedSize)
-                    }
-
-                    // Tell the firmware to begin the notification stream now that
-                    // the GATT read of file_info is complete. Sending this before
-                    // the read would race notifications against the read response.
-                    writeCommand(COMMAND_START_STREAM)
-                    Log.d(TAG, "[SyncDebug] START_STREAM sent.")
-
-                    val data = transferComplete.await()
-                    Log.d(TAG, "[SyncDebug] transferComplete.await() returned ${data.size} bytes received.")
-                    data.copyOfRange(0, expectedSize)
+                // Empty files are corrupt or aborted recordings; signal null
+                // so the caller can skip without retrying.
+                if (expectedSize == 0) {
+                    Log.w(TAG, "File is empty, skipping.")
+                    return null
                 }
-                // null means the file was empty — return immediately without retrying.
-                return result
+
+                // Update expectedSize in the active state so the callback can
+                // complete the deferred once enough bytes have arrived.
+                activeTransfer.set(TransferState(buffer, transferComplete, expectedSize))
+
+                // If chunks arrived before we updated expectedSize, check now.
+                if (buffer.size() >= expectedSize) {
+                    return buffer.toByteArray().copyOfRange(0, expectedSize)
+                }
+
+                // Tell the firmware to begin the notification stream now that
+                // the GATT read of file_info is complete. Sending this before
+                // the read would race notifications against the read response.
+                writeCommand(COMMAND_START_STREAM)
+
+                // Wait for the transfer to complete, but also watch for stalls
+                // where the BLE connection is alive but data stops flowing
+                // (e.g., Android dropped some notifications).
+                val result = waitForTransferWithStallDetection(
+                    transferComplete, buffer, expectedSize,
+                )
+                if (result != null) {
+                    return result.copyOfRange(0, expectedSize)
+                }
+                // Stall detected — fall through to retry
+                Log.w(TAG, "Transfer stall at ${buffer.size()}/$expectedSize bytes, retrying.")
+            } catch (exception: TimeoutCancellationException) {
+                Log.w(TAG, "Transfer timed out at ${buffer.size()} bytes.")
+            } catch (exception: IOException) {
+                Log.w(TAG, "Pendant disconnected during transfer at ${buffer.size()} bytes.")
+            } catch (exception: CancellationException) {
+                throw exception
             } catch (exception: Exception) {
-                if (exception is CancellationException && exception !is TimeoutCancellationException) throw exception
-                val expectedSize = activeTransfer.get()?.expectedSize ?: 0
-                Log.w(TAG, "[SyncDebug] Transfer failed: received ${buffer.size()} of $expectedSize bytes. $exception")
+                Log.w(TAG, "Transfer failed at ${buffer.size()} bytes: $exception")
             } finally {
                 activeTransfer.set(null)
             }
@@ -279,6 +286,50 @@ class PendantBleManager(context: Context) : BleManager(context) {
         throw RuntimeException(
             "Failed to transfer file after $MAX_FILE_TRANSFER_ATTEMPTS attempts."
         )
+    }
+
+    /**
+     * Waits for the transfer to complete, but detects stalls where data stops
+     * arriving. Instead of waiting the full timeout, polls the buffer every 3
+     * seconds. If the buffer hasn't grown in two consecutive polls (6s), the
+     * transfer is considered stalled and returns null for a retry.
+     */
+    private suspend fun waitForTransferWithStallDetection(
+        deferred: CompletableDeferred<ByteArray>,
+        buffer: ByteArrayOutputStream,
+        expectedSize: Int,
+    ): ByteArray? {
+        var lastSize = 0
+        var stallCount = 0
+        val startTime = System.currentTimeMillis()
+        val maxWaitMillis = TRANSFER_TOTAL_TIMEOUT_MILLIS
+
+        while (System.currentTimeMillis() - startTime < maxWaitMillis) {
+            // Check every 3 seconds.
+            kotlinx.coroutines.delay(3_000)
+
+            if (deferred.isCompleted) {
+                return deferred.await()
+            }
+
+            val currentSize = buffer.size()
+            Log.d(TAG, "Transfer progress: $currentSize/$expectedSize bytes")
+
+            if (currentSize == lastSize) {
+                stallCount++
+                if (stallCount >= 2) {
+                    // No data for 6 seconds — firmware probably finished
+                    // but we lost some notifications.
+                    Log.w(TAG, "Transfer stall detected: stuck at $currentSize/$expectedSize")
+                    return null
+                }
+            } else {
+                stallCount = 0
+            }
+            lastSize = currentSize
+        }
+        // Overall timeout.
+        return null
     }
 
     suspend fun acknowledgeFile() {
