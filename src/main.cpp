@@ -17,7 +17,9 @@
 #include <nvs.h>
 #include <nvs_flash.h>
 
+#ifndef DEBUG
 #define DEBUG 0
+#endif
 
 #if DEBUG
   #define DBG(...) Serial.printf(__VA_ARGS__)
@@ -26,13 +28,13 @@
 #endif
 
 static const int pin_button = 2;
-static const int pin_battery = 1;
-static const int pin_mic_power = 10;
+static const int pin_battery = 3;
+static const int pin_mic_power = 9;
 
 // INMP441 I2S pin assignments.
 static const int pin_i2s_sck = 6;
 static const int pin_i2s_ws = 5;
-static const int pin_i2s_sd = 13;
+static const int pin_i2s_sd = 7;
 
 static const int sample_rate = 16000;
 static const unsigned long minimum_recording_milliseconds = 1000;
