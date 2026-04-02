@@ -618,10 +618,18 @@ static bool record_and_save() {
     }
 
     unsigned long duration_milliseconds = millis() - record_start_milliseconds;
-    if (duration_milliseconds < minimum_recording_milliseconds || writer_error) {
+    if (duration_milliseconds < minimum_recording_milliseconds) {
       file.close();
       LittleFS.remove(filename);
       break;
+    }
+
+    // If the flash writer hit an error (e.g. storage full), some samples
+    // encoded into the ring buffer never made it to flash. Recompute the
+    // sample count from the actual file size so the header stays consistent.
+    if (writer_error) {
+      size_t data_bytes = file.size() - sizeof(uint32_t);
+      sample_count = data_bytes * 2;
     }
 
     // Seek back and write the actual sample count into the header.
@@ -635,6 +643,15 @@ static bool record_and_save() {
 
   i2s_deinit();
   digitalWrite(pin_mic_power, LOW);
+
+  // Wait for the button to be released before returning. When storage is
+  // full the recording loop exits while the button is still held — without
+  // this wait the device would deep-sleep and immediately re-wake (the
+  // button LOW triggers EXT0), burning battery in a tight reboot loop.
+  while (digitalRead(pin_button) == LOW) {
+    delay(20);
+  }
+
   return recording_saved;
 }
 
