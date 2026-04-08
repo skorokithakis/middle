@@ -286,6 +286,7 @@ class SyncForegroundService : Service() {
                             skipTranscription = true
                         } else {
                             scope.launch(Dispatchers.IO) {
+                                try {
                                 val client = TranscriptionClient(provider, apiKey)
                                 val text = client.transcribe(audioFile)
                                 if (text != null) {
@@ -325,6 +326,10 @@ class SyncForegroundService : Service() {
                                     WebhookLog.error("$message ($filename)")
                                     updateNotification(message)
                                     skipTranscription = true
+                                }
+                                } catch (exception: Exception) {
+                                    Log.e(TAG, "Transcription coroutine failed for $filename: $exception")
+                                    WebhookLog.error("Transcription error ($filename): ${exception::class.simpleName}: ${exception.message}")
                                 }
                             }
                         }
