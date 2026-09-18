@@ -23,12 +23,17 @@ import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.coroutineContext
+import java.io.File
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -44,10 +49,39 @@ class SyncForegroundService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var syncJob: Job? = null
+    private var syncLoopJob: Job? = null
+    private var activeDeviceType: String? = null
     private var scanning = false
+
+    // Set when the selected ring changed while the ring loop was live. The old
+    // session can commit an index for the old ring after the setter has reset
+    // it, so the fresh session re-resets once the old one is torn down.
+    private var pendingRingIndexReset = false
 
     private lateinit var repository: RecordingsRepository
     private lateinit var settings: Settings
+
+    private val sessionChangeListener: (Settings.SessionChange) -> Unit = { change ->
+        when (change) {
+            Settings.SessionChange.DEVICE_TYPE -> {
+                // Ignore writes that set the value that is already running; the
+                // radio buttons call the setter even when the option is already
+                // selected.
+                if (settings.deviceType != activeDeviceType) {
+                    startSyncLoop()
+                }
+            }
+            Settings.SessionChange.RING_DEVICE_ADDRESS -> {
+                // The running ring session caches the old ring's address and
+                // index, so a new address invalidates it even though the loop
+                // itself does not change.
+                if (activeDeviceType == Settings.DEVICE_TYPE_RING) {
+                    pendingRingIndexReset = true
+                    startSyncLoop()
+                }
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -55,7 +89,8 @@ class SyncForegroundService : Service() {
         settings = Settings(this)
         _batteryVoltage.value = settings.lastBatteryVoltage
         startForegroundNotification(getString(R.string.sync_notification_idle))
-        startScanLoop()
+        settings.addSessionChangeListener(sessionChangeListener)
+        startSyncLoop()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -65,7 +100,8 @@ class SyncForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        stopScan()
+        settings.removeSessionChangeListener(sessionChangeListener)
+        stopSyncLoop()
         scope.cancel()
         super.onDestroy()
     }
@@ -85,22 +121,136 @@ class SyncForegroundService : Service() {
         startForegroundNotification(text)
     }
 
-    private fun startScanLoop() {
-        scope.launch {
-            updateNotification(getString(R.string.sync_notification_scanning))
-            while (true) {
-                // Skip scan if a sync job is currently active.
-                if (syncJob?.isActive != true) {
-                    val profile = currentScanProfile()
-                    startScan(profile.scanMode)
-                    delay(profile.windowMillis)
-                    stopScan()
-                    delayUntilNextScan(profile)
-                } else {
-                    // Sync is active, wait before checking again.
-                    delay(500)
+    /**
+     * Starts the loop for the device type currently chosen in settings,
+     * replacing any loop that is already running.
+     */
+    private fun startSyncLoop() {
+        val deviceType = settings.deviceType
+        activeDeviceType = deviceType
+        // Cancel the old loop synchronously, then wait for its teardown inside
+        // the new loop. A ring loop owns a session scope that the vendor uses to
+        // launch scanning and transfer work, and waiting for the loop to finish
+        // means waiting for that session too, so the vendor cannot be left
+        // running alongside its replacement.
+        val previousLoop = syncLoopJob
+        previousLoop?.cancel()
+        // The per-device sync is launched in the service scope rather than as a
+        // child of the loop job, so it has to be cancelled explicitly or a
+        // pendant transfer would keep running after the device type changed.
+        syncJob?.cancel()
+        syncJob = null
+        stopScan()
+        syncLoopJob = scope.launch {
+            previousLoop?.join()
+            when (deviceType) {
+                Settings.DEVICE_TYPE_RING -> runRingSyncLoop()
+                else -> runPendantSyncLoop()
+            }
+        }
+    }
+
+    private fun stopSyncLoop() {
+        syncLoopJob?.cancel()
+        syncLoopJob = null
+        syncJob?.cancel()
+        syncJob = null
+        stopScan()
+    }
+
+    private suspend fun runPendantSyncLoop() {
+        updateNotification(getString(R.string.sync_notification_scanning))
+        while (true) {
+            // Skip scan if a sync job is currently active.
+            if (syncJob?.isActive != true) {
+                val profile = currentScanProfile()
+                startScan(profile.scanMode)
+                delay(profile.windowMillis)
+                stopScan()
+                delayUntilNextScan(profile)
+            } else {
+                // Sync is active, wait before checking again.
+                delay(500)
+            }
+        }
+    }
+
+    private suspend fun runRingSyncLoop() {
+        updateNotification(getString(R.string.sync_notification_scanning))
+        while (true) {
+            // Each attempt gets a fresh session. The IndexSyncLoop seeds the
+            // collection index from Settings when it is constructed, so after a
+            // failed save the retry asks the ring for the collection whose save
+            // failed instead of trusting the vendor's already-advanced index.
+            // The session scope is a child of this loop, so everything the
+            // vendor launches into it is torn down with the loop, and cancelling
+            // the session cannot affect the service-wide transcription dispatch.
+            val sessionJob = SupervisorJob(coroutineContext[Job])
+            val sessionScope = CoroutineScope(sessionJob + Dispatchers.Main)
+            if (pendingRingIndexReset) {
+                // The address setter reset the index, but a completion from the
+                // previous ring can have committed over the reset in between.
+                // The previous session has been joined by the time this loop
+                // starts, so resetting now cannot be overwritten by it.
+                pendingRingIndexReset = false
+                settings.lastSuccessfulCollectionIndex = null
+            }
+            try {
+                val indexSyncLoop = IndexSyncLoop(
+                    context = this,
+                    settings = settings,
+                    repository = repository,
+                    scope = sessionScope,
+                    onRecordingSaved = { audioFile, filename ->
+                        if (settings.transcriptionEnabled) {
+                            dispatchTranscriptionAndWebhook(audioFile, filename) {
+                                // The ring has no per-session transcription state, so a
+                                // failed transcription only affects this recording.
+                            }
+                        }
+                    },
+                )
+                indexSyncLoop.run()
+                Log.d(TAG, "Ring scan flow ended, restarting.")
+            } catch (exception: Exception) {
+                // The pendant path likewise logs a failed sync and returns to
+                // scanning, so a failed ring session must not stop syncing.
+                Log.e(TAG, "Ring sync loop failed, restarting.", exception)
+            } finally {
+                // Cancel and join rather than cancel and hope: the vendor's own
+                // cleanup cannot be confirmed from the stripped AAR, so the
+                // session must not be considered done while anything it started
+                // is still running. The join must still happen when this loop is
+                // being cancelled, hence NonCancellable.
+                //
+                // The wait is bounded because the vendor session ships native
+                // code and coroutine cancellation cannot interrupt a blocking
+                // JNI call. Without a bound, a hang inside the vendor would trap
+                // this NonCancellable join forever, so even stopSyncLoop() could
+                // not break it and ring sync would stay dead until the app was
+                // force-stopped. The bound keeps a vendor hang from killing our
+                // own loop, and the warning makes the choice explicit: if it
+                // ever fires we find out, instead of guessing whether the vendor
+                // stopped.
+                withContext(NonCancellable) {
+                    sessionJob.cancel()
+                    val sessionStopped = withTimeoutOrNull(SESSION_TEARDOWN_TIMEOUT_MILLIS) {
+                        sessionJob.join()
+                    }
+                    if (sessionStopped == null) {
+                        Log.w(
+                            TAG,
+                            "Vendor ring session did not stop within " +
+                                "${SESSION_TEARDOWN_TIMEOUT_MILLIS}ms, abandoning the wait.",
+                        )
+                    }
                 }
             }
+            // Without a pause a run() that returns immediately would spin, and a
+            // deterministic failure is retried forever by design. Keeping the
+            // delay at least as long as before stops a persistent failure from
+            // hammering the BLE radio.
+            delay(RING_LOOP_RESTART_DELAY_MILLIS)
         }
     }
 
@@ -176,6 +326,9 @@ class SyncForegroundService : Service() {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            // A result can still arrive after the scanner was stopped, so ignore
+            // it when the ring loop has taken over.
+            if (activeDeviceType == Settings.DEVICE_TYPE_RING) return
             // Avoid starting multiple sync jobs simultaneously.
             if (syncJob?.isActive == true) return
 
@@ -266,7 +419,9 @@ class SyncForegroundService : Service() {
 
                     val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
                     val filename = "recording_${timestamp}_$i.m4a"
-                    val audioFile = repository.saveEncodedRecording(imaData, filename)
+                    // The pendant firmware records at 16000 Hz; state it here so
+                    // the encoder does not assume a rate for other sources.
+                    val audioFile = repository.saveEncodedRecording(imaData, filename, 16000)
                     Log.d(TAG, "[SyncDebug] saveEncodedRecording() returned path=${audioFile.absolutePath} size=${audioFile.length()} bytes.")
 
                     manager.acknowledgeFile()
@@ -276,57 +431,10 @@ class SyncForegroundService : Service() {
                     delay(300)
 
                     if (!skipTranscription && settings.transcriptionEnabled) {
-                        val provider = settings.transcriptionProvider
-                        val apiKey = getSelectedProviderApiKey()
-                        if (apiKey.isEmpty()) {
-                            val message = "Transcription skipped: missing ${providerDisplayName(provider)} API key"
-                            Log.w(TAG, message)
-                            WebhookLog.error("$message ($filename)")
-                            updateNotification(message)
+                        dispatchTranscriptionAndWebhook(audioFile, filename) {
+                            // Disable further transcription attempts this
+                            // session if the first one fails, same as sync.py.
                             skipTranscription = true
-                        } else {
-                            scope.launch(Dispatchers.IO) {
-                                val client = TranscriptionClient(provider, apiKey)
-                                val text = client.transcribe(audioFile)
-                                if (text != null) {
-                                    repository.saveTranscript(text, audioFile)
-                                    Log.d(TAG, "Saved transcript for $filename.")
-
-                                    val webhookUrl = settings.webhookUrl.trim()
-                                    if (settings.webhookEnabled && webhookUrl.isNotEmpty()) {
-                                        val template = settings.webhookBodyTemplate.ifBlank {
-                                            Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
-                                        }
-                                        WebhookLog.info("POST $webhookUrl ($filename)")
-                                        val appRetryQueue = (application as MiddleApplication).retryQueue
-                                        try {
-                                            val result = WebhookClient.post(webhookUrl, text, template)
-                                            if (result.success) {
-                                                Log.d(TAG, "Webhook POST succeeded for $filename.")
-                                                WebhookLog.info("${result.code} OK ($filename)")
-                                            } else {
-                                                Log.w(TAG, "Webhook POST failed with status ${result.code} for $filename.")
-                                                WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
-                                                if (result.code !in 400..499) {
-                                                    appRetryQueue.enqueue(text, webhookUrl, template, filename)
-                                                }
-                                            }
-                                        } catch (exception: Exception) {
-                                            Log.w(TAG, "Webhook POST error for $filename: $exception")
-                                            WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
-                                            appRetryQueue.enqueue(text, webhookUrl, template, filename)
-                                        }
-                                    }
-                                } else {
-                                    // Disable further transcription attempts this
-                                    // session if the first one fails, same as sync.py.
-                                    val message = "Transcription failed (${providerDisplayName(provider)})"
-                                    Log.w(TAG, message)
-                                    WebhookLog.error("$message ($filename)")
-                                    updateNotification(message)
-                                    skipTranscription = true
-                                }
-                            }
                         }
                     }
                 }
@@ -351,6 +459,76 @@ class SyncForegroundService : Service() {
                 Log.w(TAG, "Disconnect error: $exception")
             }
             updateNotification(getString(R.string.sync_notification_scanning))
+        }
+    }
+
+    /**
+     * Transcribes a saved recording and delivers the transcript to the webhook
+     * if one is configured. This is deliberately fire and forget: the caller
+     * must not wait for transcription or the webhook, because both take far
+     * longer than the per-file GATT pause the pendant transfer relies on.
+     *
+     * [onTranscriptionUnavailable] is invoked when transcription cannot be
+     * attempted or fails. It exists because the pendant disables transcription
+     * for the rest of the sync session after the first failure, while the ring
+     * has no session to disable; the decision cannot be returned because the
+     * failure is usually discovered inside the launched coroutine, long after
+     * this function has returned.
+     */
+    private fun dispatchTranscriptionAndWebhook(
+        audioFile: File,
+        filename: String,
+        onTranscriptionUnavailable: () -> Unit,
+    ) {
+        val provider = settings.transcriptionProvider
+        val apiKey = getSelectedProviderApiKey()
+        if (apiKey.isEmpty()) {
+            val message = "Transcription skipped: missing ${providerDisplayName(provider)} API key"
+            Log.w(TAG, message)
+            WebhookLog.error("$message ($filename)")
+            updateNotification(message)
+            onTranscriptionUnavailable()
+        } else {
+            scope.launch(Dispatchers.IO) {
+                val client = TranscriptionClient(provider, apiKey)
+                val text = client.transcribe(audioFile)
+                if (text != null) {
+                    repository.saveTranscript(text, audioFile)
+                    Log.d(TAG, "Saved transcript for $filename.")
+
+                    val webhookUrl = settings.webhookUrl.trim()
+                    if (settings.webhookEnabled && webhookUrl.isNotEmpty()) {
+                        val template = settings.webhookBodyTemplate.ifBlank {
+                            Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
+                        }
+                        WebhookLog.info("POST $webhookUrl ($filename)")
+                        val appRetryQueue = (application as MiddleApplication).retryQueue
+                        try {
+                            val result = WebhookClient.post(webhookUrl, text, template)
+                            if (result.success) {
+                                Log.d(TAG, "Webhook POST succeeded for $filename.")
+                                WebhookLog.info("${result.code} OK ($filename)")
+                            } else {
+                                Log.w(TAG, "Webhook POST failed with status ${result.code} for $filename.")
+                                WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
+                                if (result.code !in 400..499) {
+                                    appRetryQueue.enqueue(text, webhookUrl, template, filename)
+                                }
+                            }
+                        } catch (exception: Exception) {
+                            Log.w(TAG, "Webhook POST error for $filename: $exception")
+                            WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
+                            appRetryQueue.enqueue(text, webhookUrl, template, filename)
+                        }
+                    }
+                } else {
+                    val message = "Transcription failed (${providerDisplayName(provider)})"
+                    Log.w(TAG, message)
+                    WebhookLog.error("$message ($filename)")
+                    updateNotification(message)
+                    onTranscriptionUnavailable()
+                }
+            }
         }
     }
 
@@ -404,6 +582,16 @@ class SyncForegroundService : Service() {
 
         private const val BATTERY_LOW_THRESHOLD_MV = 3860
         private const val BATTERY_LOW_DEBOUNCE_MS = 6 * 60 * 60 * 1000L
+
+        // Matches the pause the pendant loop uses while a sync is in flight, so
+        // a ring session that ends immediately is retried at the same cadence.
+        private const val RING_LOOP_RESTART_DELAY_MILLIS = 500L
+
+        // Long enough that a normal vendor teardown finishes, short enough that
+        // a native hang does not keep ring sync stalled for long. Three seconds
+        // is well above the instant that cooperative cancellation takes, so a
+        // warning here means something is genuinely stuck in the vendor.
+        private const val SESSION_TEARDOWN_TIMEOUT_MILLIS = 3000L
 
         private val _syncState = MutableStateFlow("Idle")
         val syncState: StateFlow<String> = _syncState

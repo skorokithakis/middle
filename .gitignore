@@ -4,3 +4,4 @@ recordings/
 *.pyc
 __pycache__/
 misc/coding-team/
+.tickets/

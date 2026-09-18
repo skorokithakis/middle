@@ -16,8 +16,6 @@ class RecordingsRepository(context: Context) {
     private val _recordings = MutableStateFlow<List<Recording>>(emptyList())
     val recordings: StateFlow<List<Recording>> = _recordings
 
-    val directory: File get() = recordingsDirectory
-
     init {
         refresh()
     }
@@ -34,12 +32,27 @@ class RecordingsRepository(context: Context) {
     /**
      * Decode IMA ADPCM data, encode to M4A, and save to disk.
      */
-    suspend fun saveEncodedRecording(imaData: ByteArray, filename: String): File {
+    suspend fun saveEncodedRecording(imaData: ByteArray, filename: String, sampleRate: Int): File {
         val file = File(recordingsDirectory, filename)
         withContext(Dispatchers.IO) {
-            AudioEncoder.encodeFromIma(imaData, file)
+            AudioEncoder.encodeFromIma(imaData, file, sampleRate)
         }
         Log.d(TAG, "[SyncDebug] encodeFromIma() output path=${file.absolutePath} size=${file.length()} bytes.")
+        refresh()
+        return file
+    }
+
+    /**
+     * Encode already-decoded signed 16-bit little-endian PCM into M4A and save
+     * it. The Index ring hands us PCM16 directly, unlike the pendant path
+     * ([saveEncodedRecording]), which has to decode IMA ADPCM first.
+     */
+    suspend fun savePcm16Recording(pcm16: ByteArray, filename: String, sampleRate: Int): File {
+        val file = File(recordingsDirectory, filename)
+        withContext(Dispatchers.IO) {
+            AudioEncoder.encodeToM4a(pcm16, file, sampleRate)
+        }
+        Log.d(TAG, "[SyncDebug] encodeToM4a() output path=${file.absolutePath} size=${file.length()} bytes.")
         refresh()
         return file
     }

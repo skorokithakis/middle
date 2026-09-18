@@ -1,5 +1,6 @@
 package com.middle.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -27,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.middle.app.data.Settings
+import com.middle.app.viewmodel.BondedDevice
 import com.middle.app.viewmodel.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -46,6 +49,10 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     onOpenDrawer: () -> Unit,
 ) {
+    val deviceType by viewModel.deviceType.collectAsState()
+    val ringDeviceAddress by viewModel.ringDeviceAddress.collectAsState()
+    val bondedDevices by viewModel.bondedDevices.collectAsState()
+    val bluetoothConnectGranted by viewModel.bluetoothConnectGranted.collectAsState()
     val transcriptionProvider by viewModel.transcriptionProvider.collectAsState()
     val openAiApiKey by viewModel.openAiApiKey.collectAsState()
     val elevenLabsApiKey by viewModel.elevenLabsApiKey.collectAsState()
@@ -57,6 +64,16 @@ fun SettingsScreen(
     val isPaired by viewModel.isPaired.collectAsState()
     val pairingToken by viewModel.pairingToken.collectAsState()
     var showUnpairDialog by remember { mutableStateOf(false) }
+
+    // The bonded list is read when the picker is shown rather than when the view
+    // model is created, because the activity asks for BLUETOOTH_CONNECT after
+    // the view models exist and the current permission state is only known once
+    // the picker renders.
+    LaunchedEffect(deviceType) {
+        if (deviceType == Settings.DEVICE_TYPE_RING) {
+            viewModel.refreshBondedDevices()
+        }
+    }
 
     val isOpenAiProvider = transcriptionProvider == Settings.TRANSCRIPTION_PROVIDER_OPENAI
     val apiKey = if (isOpenAiProvider) openAiApiKey else elevenLabsApiKey
@@ -87,6 +104,60 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
         ) {
+            Text("Sync device", style = MaterialTheme.typography.titleSmall)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(
+                    selected = deviceType == Settings.DEVICE_TYPE_PENDANT,
+                    onClick = { viewModel.setDeviceType(Settings.DEVICE_TYPE_PENDANT) },
+                )
+                Text("Pendant")
+                Spacer(modifier = Modifier.weight(1f))
+                RadioButton(
+                    selected = deviceType == Settings.DEVICE_TYPE_RING,
+                    onClick = { viewModel.setDeviceType(Settings.DEVICE_TYPE_RING) },
+                )
+                Text("Ring")
+            }
+
+            if (deviceType == Settings.DEVICE_TYPE_RING) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text("Paired ring", style = MaterialTheme.typography.titleSmall)
+                Spacer(modifier = Modifier.height(4.dp))
+                when {
+                    !bluetoothConnectGranted -> Text(
+                        text = "Bluetooth permission is required to list paired rings.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    bondedDevices.isEmpty() -> Text(
+                        text = "No paired devices found. Pair the ring in Android's Bluetooth settings first.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    else -> Column {
+                        bondedDevices.forEach { device ->
+                            RingDeviceOption(
+                                device = device,
+                                selected = device.address == ringDeviceAddress,
+                                onSelect = { viewModel.setRingDeviceAddress(device.address) },
+                            )
+                        }
+                    }
+                }
+                if (ringDeviceAddress.isEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "No ring selected.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
             Text("Transcription provider", style = MaterialTheme.typography.titleSmall)
             Spacer(modifier = Modifier.height(4.dp))
             Row(
@@ -265,6 +336,36 @@ fun SettingsScreen(
                     },
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun RingDeviceOption(
+    device: BondedDevice,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onSelect,
+        )
+        Column {
+            Text(
+                text = device.name ?: "Unnamed device",
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                text = device.address,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }

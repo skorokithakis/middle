@@ -16,14 +16,15 @@ middle/
 ├── sync.py               # Host-side BLE sync + transcription (Python, uv script)
 ├── android/              # Android companion app (Kotlin + Jetpack Compose)
 │   └── app/src/main/java/com/middle/app/
-│       ├── ble/          # BLE manager and foreground sync service
+│       ├── ble/          # BLE managers, sync loops and foreground sync service
 │       │   ├── BleConstants.kt         # UUIDs and command bytes (single source of truth for Android)
 │       │   ├── PendantBleManager.kt    # Nordic BLE manager: scan, connect, sync orchestration
+│       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
 │       ├── data/         # Recordings, webhook client, retry queue, settings
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
 │       │   ├── RecordingsRepository.kt # StateFlow of recordings; encodes IMA→M4A on save
-│       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (API key, toggles, webhook)
+│       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (API key, toggles, webhook, sync device type, ring address)
 │       │   ├── WebhookClient.kt        # OkHttp POST with Basic Auth from URL credentials
 │       │   ├── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
 │       │   └── WebhookRetryQueue.kt    # JSON-file-backed retry queue with exponential backoff
@@ -34,12 +35,12 @@ middle/
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/resend-webhook
-│       │   ├── SettingsScreen.kt       # API key, background sync, transcription, webhook toggles
+│       │   ├── SettingsScreen.kt       # API key, toggles, webhook, sync device and ring picker
 │       │   ├── LogScreen.kt            # Webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual webhook resend
-│       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows
+│       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
 │       └── MiddleApplication.kt        # App singleton: RecordingsRepository, WebhookRetryQueue, notification channel
 ├── platformio.ini        # PlatformIO build config
@@ -72,7 +73,9 @@ middle/
 - **Language**: Kotlin
 - **UI**: Jetpack Compose + Material3 (`compose-bom:2025.01.01`)
 - **Navigation**: `navigation-compose` with a `ModalNavigationDrawer` (hamburger menu)
-- **BLE**: Nordic BLE library (`no.nordicsemi.android:ble:2.7.4` + `-ktx`)
+- **BLE**: Nordic BLE library (`no.nordicsemi.android:ble:2.7.4` + `-ktx`) for the
+  pendant; haversine Android library (`io.github.coredevices.haversine:haversine-android`)
+  for the Index 01 ring
 - **HTTP**: OkHttp 4.12.0 (webhook delivery and transcription API calls)
 - **Transcription**: OpenAI API via OkHttp (raw HTTP multipart, not SDK)
 - **Storage**: Encrypted SharedPreferences (`security-crypto`) for API key and all
@@ -170,6 +173,30 @@ Key details:
 
 ---
 
+## Sync device selection
+
+The app syncs from one device at a time, chosen by the `deviceType` setting
+(`pendant` or `ring`, pendant by default so existing installs keep working).
+
+`SyncForegroundService` starts either `runPendantSyncLoop()` (the original
+custom-GATT scan loop) or `runRingSyncLoop()` (which drives `IndexSyncLoop` and
+the vendor haversine library). The two loops share nothing at the transport
+level; the only seam is `RecordingsRepository`, which both feed.
+
+Each loop restarts itself after a failed or finished session, and the service
+cancels the running loop when the setting changes, so no app restart is needed.
+Both paths call `dispatchTranscriptionAndWebhook()`, a plain private function on
+the service, which transcribes the saved recording and POSTs the transcript in a
+fire-and-forget coroutine. The pendant passes a callback that disables
+transcription for the rest of its sync session on the first failure; the ring
+has no session, so its callback is a no-op.
+
+`Settings` exposes `addDeviceTypeListener`/`removeDeviceTypeListener` because
+`EncryptedSharedPreferences` change listeners only fire on the writing instance,
+and the settings UI and the service each build their own `Settings`.
+
+---
+
 ## Firmware device lifecycle
 
 ```
@@ -193,7 +220,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/resend-webhook buttons. Sync status and battery voltage shown in a header card. |
 | Log | `log` | Monospace webhook delivery log (last 50 entries, errors in red). |
-| Settings | `settings` | OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
+| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).
 
@@ -210,7 +237,8 @@ Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top b
 | `android/.../WebhookRetryQueue.kt` | Webhook persistence, exponential backoff, 4xx vs 5xx handling |
 | `android/.../WebhookClient.kt` | OkHttp POST, Basic Auth from URL credentials |
 | `android/.../PendantBleManager.kt` | Nordic BLE manager: scan, connect, sync orchestration |
-| `android/.../SyncForegroundService.kt` | Foreground service: scan loop, pairing handshake, per-file sync, transcription dispatch |
+| `android/.../SyncForegroundService.kt` | Foreground service: selects the pendant or ring loop, pairing handshake, per-file sync, shared transcription/webhook dispatch |
+| `android/.../IndexSyncLoop.kt` | Ring path: awaits Bluetooth, collects vendor satellite statuses, persists completed ring audio |
 | `android/.../TranscriptionClient.kt` | OpenAI transcription API calls |
 | `android/.../AudioEncoder.kt` | MediaCodec AAC encoder + MediaMuxer → M4A |
 | `android/.../ImaAdpcmDecoder.kt` | Pure-Kotlin ADPCM decoder (must stay in sync with firmware tables) |

@@ -1,11 +1,16 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 android {
     namespace = "com.middle.app"
-    compileSdk = 35
+    // The haversine AAR declares minCompileSdk 36, so the app has to compile
+    // against API 36 even though it still targets 35 at runtime.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.middle.app"
@@ -30,22 +35,20 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
     }
+}
 
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.8"
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_17
     }
 }
 
 dependencies {
     // Compose BOM for consistent versions.
-    val composeBom = platform("androidx.compose:compose-bom:2025.01.01")
+    val composeBom = platform("androidx.compose:compose-bom:2025.09.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -58,6 +61,9 @@ dependencies {
     // Nordic BLE library.
     implementation("no.nordicsemi.android:ble:2.7.4")
     implementation("no.nordicsemi.android:ble-ktx:2.7.4")
+
+    // Vendor library that speaks the Pebble Index 01 ring's closed BLE protocol.
+    implementation("io.github.coredevices.haversine:haversine-android:2263387")
 
     // OkHttp for OpenAI API calls.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
