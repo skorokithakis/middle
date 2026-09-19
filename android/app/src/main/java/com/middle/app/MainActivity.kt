@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -32,10 +33,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.middle.app.ble.SyncForegroundService
+import com.middle.app.ui.ActionsScreen
 import com.middle.app.ui.LogScreen
 import com.middle.app.ui.RecordingsScreen
 import com.middle.app.ui.SettingsScreen
 import com.middle.app.ui.theme.MiddleTheme
+import com.middle.app.viewmodel.ActionsViewModel
 import com.middle.app.viewmodel.RecordingsViewModel
 import com.middle.app.viewmodel.SettingsViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -145,6 +148,7 @@ fun MiddleNavigation(openRecordingsRequested: MutableStateFlow<Boolean>) {
     val navController = rememberNavController()
     val recordingsViewModel: RecordingsViewModel = viewModel()
     val settingsViewModel: SettingsViewModel = viewModel()
+    val actionsViewModel: ActionsViewModel = viewModel()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -201,6 +205,21 @@ fun MiddleNavigation(openRecordingsRequested: MutableStateFlow<Boolean>) {
                     },
                 )
                 NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Notifications, contentDescription = null) },
+                    label = { Text("Actions") },
+                    selected = currentRoute == "actions",
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate("actions") {
+                                popUpTo("recordings") { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    },
+                )
+                NavigationDrawerItem(
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
                     label = { Text("Settings") },
                     selected = currentRoute == "settings",
@@ -227,6 +246,12 @@ fun MiddleNavigation(openRecordingsRequested: MutableStateFlow<Boolean>) {
             }
             composable("log") {
                 LogScreen(onOpenDrawer = openDrawer)
+            }
+            composable("actions") {
+                ActionsScreen(
+                    viewModel = actionsViewModel,
+                    onOpenDrawer = openDrawer,
+                )
             }
             composable("settings") {
                 SettingsScreen(

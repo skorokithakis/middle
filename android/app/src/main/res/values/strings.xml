@@ -19,4 +19,19 @@
         <item quantity="one">Skipped 1 recording that was already on the ring. New recordings will sync normally.</item>
         <item quantity="other">Skipped %d recordings that were already on the ring. New recordings will sync normally.</item>
     </plurals>
+    <string name="actions_title">Actions</string>
+    <string name="actions_open_menu">Open menu</string>
+    <string name="actions_add">Add action</string>
+    <string name="actions_delete">Delete action</string>
+    <string name="actions_type_alarm">Alarm</string>
+    <string name="actions_pattern_label">Pattern</string>
+    <string name="actions_suppress_webhook">Do not send matching transcripts to webhook</string>
+    <string name="actions_overlay_message">Alarms need the \"Display over other apps\" permission to be set hands-free.</string>
+    <string name="actions_overlay_grant">Allow</string>
+    <string name="actions_notification_channel">Actions</string>
+    <string name="alarm_sent_notification_text">Alarm %1$s sent to clock app</string>
+    <string name="alarm_tap_notification_text">Tap to set alarm for %1$s</string>
+    <string name="alarm_no_time_notification_text">Alarm command heard but no time found</string>
+    <string name="alarm_no_clock_app_notification_text">No clock app found</string>
+    <string name="alarm_could_not_set_notification_text">Could not set alarm</string>
 </resources>

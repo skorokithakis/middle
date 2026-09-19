@@ -50,6 +50,13 @@ class MiddleApplication : Application() {
                 NotificationManager.IMPORTANCE_DEFAULT,
             )
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                ACTIONS_CHANNEL_ID,
+                getString(R.string.actions_notification_channel),
+                NotificationManager.IMPORTANCE_DEFAULT,
+            )
+        )
     }
 
     companion object {
@@ -59,5 +66,11 @@ class MiddleApplication : Application() {
         const val BATTERY_LOW_NOTIFICATION_ID = 2
         const val NEW_RECORDING_CHANNEL_ID = "middle_new_recording"
         const val NEW_RECORDING_NOTIFICATION_ID = 3
+        const val ACTIONS_CHANNEL_ID = "middle_actions"
+        const val ACTIONS_NOTIFICATION_ID = 5
+
+        // Separate from the alarm confirmation above so an informational
+        // notification cannot replace a pending tap-to-set alarm.
+        const val ACTIONS_INFO_NOTIFICATION_ID = 6
     }
 }

@@ -317,12 +317,38 @@ class PipelineQueue(
     }
 
     private fun advanceAfterTranscription(filename: String) {
+        // Action handling is best-effort: a failure here (for example a
+        // SecurityException from the clock app) must not leave the job at
+        // TRANSCRIBE, where it would be retried and the recording transcribed
+        // again. On failure the webhook is still sent, so fail open.
+        val suppressWebhook = try {
+            val transcript = transcriptFile(filename)
+            val result = ActionMatcher.evaluate(
+                if (transcript.exists()) transcript.readText() else "",
+                settings.actions,
+            )
+            logInvalidActions(result)
+            // Actions are run once here, on the only successful transcription
+            // of a recording; the later webhook stage never evaluates them
+            // again.
+            AlarmActionRunner.run(appContext, result)
+            result.suppressWebhook
+        } catch (exception: Exception) {
+            Log.e(TAG, "[action] action handling failed for $filename; sending webhook", exception)
+            false
+        }
+
         val webhookConfigured = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
         synchronized(lock) {
-            if (webhookConfigured) {
-                writeJobLocked(filename, PipelineStage.WEBHOOK)
-            } else {
-                deleteJobLocked(filename)
+            when {
+                webhookConfigured && !suppressWebhook ->
+                    writeJobLocked(filename, PipelineStage.WEBHOOK)
+                else -> {
+                    if (webhookConfigured) {
+                        WebhookLog.info("[action] webhook suppressed by alarm action")
+                    }
+                    deleteJobLocked(filename)
+                }
             }
             refreshPendingFilenamesLocked()
         }
@@ -371,12 +397,18 @@ class PipelineQueue(
     private fun ensureJobLocked(filename: String): Boolean {
         val transcriptExists = transcriptFile(filename).exists()
         val webhookConfigured = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
+        // The suppress check is applied without running the alarms again, so a
+        // suppressed transcript cannot leak its webhook on a manual retry.
+        val webhookSuppressed = webhookConfigured && isWebhookSuppressedByAction(filename)
+        if (webhookSuppressed) {
+            WebhookLog.info("[action] webhook suppressed by alarm action")
+        }
         return when {
             !transcriptExists -> {
                 writeJobLocked(filename, PipelineStage.TRANSCRIBE)
                 true
             }
-            webhookConfigured -> {
+            webhookConfigured && !webhookSuppressed -> {
                 writeJobLocked(filename, PipelineStage.WEBHOOK)
                 true
             }
@@ -384,6 +416,20 @@ class PipelineQueue(
                 deleteJobLocked(filename)
                 false
             }
+        }
+    }
+
+    private fun isWebhookSuppressedByAction(filename: String): Boolean {
+        val transcript = transcriptFile(filename)
+        if (!transcript.exists()) return false
+        val result = ActionMatcher.evaluate(transcript.readText(), settings.actions)
+        logInvalidActions(result)
+        return result.suppressWebhook
+    }
+
+    private fun logInvalidActions(result: ActionResult) {
+        for (action in result.invalid) {
+            Log.w(TAG, "[action] invalid pattern for action ${action.id}")
         }
     }
 

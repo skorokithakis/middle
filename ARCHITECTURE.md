@@ -21,7 +21,10 @@ middle/
 │       │   ├── PendantBleManager.kt    # Nordic BLE manager: scan, connect, sync orchestration
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
-│       ├── data/         # Recordings, webhook client, pipeline queue, settings
+│       ├── data/         # Recordings, actions, webhook client, pipeline queue, settings
+│       │   ├── Action.kt               # User-defined action; list persisted as one JSON array string
+│       │   ├── ActionMatcher.kt        # Pure pattern/when rules evaluated against a transcript (unit tested)
+│       │   ├── AlarmActionRunner.kt    # Starts the system clock app or posts a tap-to-set notification
 │       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs (one JSON file per recording)
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
@@ -35,11 +38,13 @@ middle/
 │       ├── transcription/
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
+│       │   ├── ActionsScreen.kt        # Action list; add/delete/toggle/edit pattern and webhook suppression
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
 │       │   ├── SettingsScreen.kt       # API key, toggles, webhook, sync device and ring picker, settings backup export/import
 │       │   ├── LogScreen.kt            # Webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
+│       │   ├── ActionsViewModel.kt     # Reads/writes the action list as a StateFlow
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual pipeline retry
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
@@ -135,6 +140,7 @@ INMP441 (I2S, 32-bit stereo) → left channel >> 16 → int16 PCM
   → signed 16-bit PCM
   → MP3 (lameenc, sync.py) or AAC/M4A (MediaCodec, Android)
   → optional transcription (OpenAI gpt-4o-transcribe)
+  → optional actions (ActionMatcher → AlarmClock, or suppress webhook)
   → optional webhook delivery (POST with configurable JSON body template)
 ```
 
@@ -179,6 +185,47 @@ Key details:
   timeout, Basic Auth extracted from URL credentials).
 - Manual retry is available from `RecordingsViewModel.retryPipeline()` (triggered
   from the recordings list UI).
+
+---
+
+## Actions
+
+Actions are user-defined rules that run once against a transcript after it is
+produced, before any webhook delivery. `Action.kt` is the data class,
+`ActionMatcher.kt` holds the pure matching rules (unit-tested by
+`ActionMatcherTest.kt`; `ActionTest.kt` covers JSON round-tripping), and
+`AlarmActionRunner.kt` performs the side effect.
+
+Key details:
+- The whole list is one JSON array string under a single `Settings` key
+  (`actions`). An absent key reads as an empty list; an entry with an unknown
+  type or malformed fields is skipped and logged rather than failing the list.
+- The only type today is `ALARM`. An enabled action's `pattern` is compiled as a
+  case-insensitive regex; the transcript text after the match is parsed as a time
+  (bare `7` = 07:00, `7pm` = 19:00, optional minutes, `am`/`pm` case- and
+  dot-insensitive). A pattern that does not compile is reported and never
+  matches.
+- Evaluation happens exactly once, in
+  `PipelineQueue.advanceAfterTranscription()` on the only successful
+  transcription of a recording. The clock app resolves a past time to tomorrow.
+- The alarm is set by starting the system clock app with
+  `AlarmClock.ACTION_SET_ALARM` (hour, minute, `EXTRA_SKIP_UI`, fixed message),
+  which the manifest may open with `com.android.alarm.permission.SET_ALARM`.
+  Starting an activity from the background needs the "Display over other apps"
+  permission, so without `SYSTEM_ALERT_WINDOW` the alarm is posted as a
+  notification the user taps instead; `ActionsScreen.kt` shows a card to grant it.
+- Alarm confirmations and the tap-to-set notification use the `middle_actions`
+  channel with ID 5, so a later confirmation replaces the pending tap-to-set
+  alarm. Informational notifications (no parseable time, missing clock app, or a
+  `SecurityException` from the clock app) use ID 6 so they cannot replace it.
+- Action handling is best-effort: a failure while matching or running actions is
+  logged and the job still advances with `suppressWebhook = false`, so a failed
+  action cannot leave the recording queued for re-transcription.
+- An action with `suppressWebhook` suppresses the webhook stage only when an
+  alarm actually fired; a no-time match still lets the transcript through.
+- Manual retry (`ensureJobLocked`) re-evaluates the pattern only to decide
+  suppression and never fires the alarm again, so a suppressed transcript cannot
+  leak its webhook on retry.
 
 ---
 
@@ -230,6 +277,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. |
+| Actions | `actions` | List of actions with per-card enable toggle, editable pattern, webhook-suppression toggle and delete. Top bar adds a new alarm action with the default pattern. An overlay-permission card is shown when the permission is missing. |
 | Log | `log` | Monospace webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
 
@@ -241,8 +289,10 @@ preference names `Settings.kt` uses. An import parses and type-checks the whole
 file before showing a confirmation dialog and writing nothing until it is
 confirmed; keys absent from the file keep their current value and unknown keys
 are ignored. The import writes through the `Settings` property setters so a
-device type or ring address change restarts the sync service. The file holds the
-API keys and pairing token as plain text, so the user must keep it private.
+device type or ring address change restarts the sync service. Actions are
+included, as their serialized JSON array under the same `actions` key. The file
+holds the API keys and pairing token as plain text, so the user must keep it
+private.
 
 A new recording saved by either sync path posts a "New recording added" notification on its own channel, separate from the battery alerts channel. A fixed notification ID means several files saved in one sync collapse into a single notification, and tapping it opens the app on the Recordings screen.
 
@@ -327,8 +377,10 @@ uv run python -m py_compile sync.py    # syntax check
   download recordings. A pre-shared key is listed in `TODO.md` but not yet
   implemented.
 - **Limited automated tests**: `PipelinePolicyTest.kt` unit-tests backoff and
-  outcome classification. There are no firmware tests, Python tests, or Android
-  instrumentation tests. `AGENTS.md` documents the intended commands.
+  outcome classification; `ActionTest.kt` covers action JSON serialization and
+  `ActionMatcherTest.kt` the pattern/time matching rules. There are no firmware
+  tests, Python tests, or Android instrumentation tests. `AGENTS.md` documents
+  the intended commands.
 - **`backgroundSyncEnabled` setting is stored but not enforced**: `Settings.kt`
   exposes the toggle and `SettingsScreen.kt` renders it, but
   `SyncForegroundService` does not read it — the service always scans regardless

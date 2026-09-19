@@ -52,6 +52,13 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        // Action.fromJson logs and skips entries it cannot understand; the JVM
+        // test run needs android.util.Log to return a default instead of
+        // throwing "not mocked".
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 kotlin {

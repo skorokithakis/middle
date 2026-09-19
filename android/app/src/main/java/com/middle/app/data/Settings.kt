@@ -24,6 +24,7 @@ data class SettingsBackup(
     val webhookEnabled: Boolean? = null,
     val webhookUrl: String? = null,
     val webhookBodyTemplate: String? = null,
+    val actions: List<Action>? = null,
     val pairedDeviceAddress: String? = null,
     val pairingToken: String? = null,
 )
@@ -124,6 +125,12 @@ class Settings(context: Context) {
         get() = prefs.getString(KEY_WEBHOOK_BODY_TEMPLATE, DEFAULT_WEBHOOK_BODY_TEMPLATE) ?: DEFAULT_WEBHOOK_BODY_TEMPLATE
         set(value) = prefs.edit().putString(KEY_WEBHOOK_BODY_TEMPLATE, value).apply()
 
+    // Stored as one JSON array string so the list stays a single preference key.
+    // An absent key reads as no actions.
+    var actions: List<Action>
+        get() = prefs.getString(KEY_ACTIONS, null)?.let { Action.parseJsonOrNull(it) } ?: emptyList()
+        set(value) = prefs.edit().putString(KEY_ACTIONS, Action.toJson(value)).apply()
+
     var lastBatteryVoltage: String
         get() = prefs.getString(KEY_LAST_BATTERY_VOLTAGE, "N/A") ?: "N/A"
         set(value) = prefs.edit().putString(KEY_LAST_BATTERY_VOLTAGE, value).apply()
@@ -210,6 +217,7 @@ class Settings(context: Context) {
         put(KEY_WEBHOOK_ENABLED, webhookEnabled)
         put(KEY_WEBHOOK_URL, webhookUrl)
         put(KEY_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
+        put(KEY_ACTIONS, Action.toJson(actions))
         put(KEY_PAIRED_DEVICE_ADDRESS, pairedDeviceAddress)
         put(KEY_PAIRING_TOKEN, pairingToken)
     }.toString()
@@ -256,6 +264,12 @@ class Settings(context: Context) {
                 return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
             }
         }
+        // A present actions value must be a JSON array: a plain string would
+        // otherwise parse as an empty list and wipe the stored actions.
+        val actions = json.stringOrNull(KEY_ACTIONS)?.let { Action.parseJsonOrNull(it) }
+        if (json.has(KEY_ACTIONS) && actions == null) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
         return BackupParseResult.Valid(
             SettingsBackup(
                 openAiApiKey = json.stringOrNull(KEY_OPENAI_API_KEY),
@@ -268,6 +282,7 @@ class Settings(context: Context) {
                 webhookEnabled = json.booleanOrNull(KEY_WEBHOOK_ENABLED),
                 webhookUrl = json.stringOrNull(KEY_WEBHOOK_URL),
                 webhookBodyTemplate = json.stringOrNull(KEY_WEBHOOK_BODY_TEMPLATE),
+                actions = actions,
                 pairedDeviceAddress = json.stringOrNull(KEY_PAIRED_DEVICE_ADDRESS),
                 pairingToken = json.stringOrNull(KEY_PAIRING_TOKEN),
             ),
@@ -290,6 +305,7 @@ class Settings(context: Context) {
         backup.webhookEnabled?.let { webhookEnabled = it }
         backup.webhookUrl?.let { webhookUrl = it }
         backup.webhookBodyTemplate?.let { webhookBodyTemplate = it }
+        backup.actions?.let { actions = it }
         backup.pairedDeviceAddress?.let { pairedDeviceAddress = it }
         backup.pairingToken?.let { pairingToken = it }
     }
@@ -315,6 +331,7 @@ class Settings(context: Context) {
         private const val KEY_WEBHOOK_ENABLED = "webhook_enabled"
         private const val KEY_WEBHOOK_URL = "webhook_url"
         private const val KEY_WEBHOOK_BODY_TEMPLATE = "webhook_body_template"
+        private const val KEY_ACTIONS = "actions"
         private const val KEY_LAST_BATTERY_VOLTAGE = "last_battery_voltage"
         private const val KEY_LAST_BATTERY_NOTIFICATION_TIME = "last_battery_notification_time"
         private const val KEY_PAIRED_DEVICE_ADDRESS = "paired_device_address"
@@ -340,6 +357,7 @@ class Settings(context: Context) {
             KEY_RING_DEVICE_ADDRESS,
             KEY_WEBHOOK_URL,
             KEY_WEBHOOK_BODY_TEMPLATE,
+            KEY_ACTIONS,
             KEY_PAIRED_DEVICE_ADDRESS,
             KEY_PAIRING_TOKEN,
         )
