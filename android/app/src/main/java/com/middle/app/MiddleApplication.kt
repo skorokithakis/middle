@@ -42,7 +42,11 @@ class MiddleApplication : Application() {
             NotificationChannel(
                 NEW_RECORDING_CHANNEL_ID,
                 getString(R.string.new_recording_notification_channel),
-                NotificationManager.IMPORTANCE_LOW,
+                // A low-importance channel was tried first and rejected: it is
+                // silent with no banner, so the notification went unnoticed in
+                // the shade. Android freezes importance when the channel is
+                // first created, so lowering this again needs a new channel ID.
+                NotificationManager.IMPORTANCE_DEFAULT,
             )
         )
     }

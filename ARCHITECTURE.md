@@ -224,7 +224,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).
 
-A new recording saved by either sync path posts a "New recording added" notification on its own low-importance channel. A fixed notification ID means several files saved in one sync collapse into a single notification, and tapping it opens the app on the Recordings screen.
+A new recording saved by either sync path posts a "New recording added" notification on its own channel, separate from the battery alerts channel. A fixed notification ID means several files saved in one sync collapse into a single notification, and tapping it opens the app on the Recordings screen.
 
 ---
 
