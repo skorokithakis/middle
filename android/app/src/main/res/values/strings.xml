@@ -11,4 +11,7 @@
     <string name="battery_low_notification_channel">Battery alerts</string>
     <string name="battery_low_notification_title">Pendant battery low</string>
     <string name="battery_low_notification_text">Please charge your pendant soon.</string>
+    <string name="new_recording_notification_channel">New recordings</string>
+    <string name="new_recording_notification_title">Middle</string>
+    <string name="new_recording_notification_text">New recording added</string>
 </resources>

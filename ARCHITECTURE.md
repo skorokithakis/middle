@@ -42,7 +42,7 @@ middle/
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual webhook resend
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
-│       └── MiddleApplication.kt        # App singleton: RecordingsRepository, WebhookRetryQueue, notification channel
+│       └── MiddleApplication.kt        # App singleton: RecordingsRepository, WebhookRetryQueue, notification channels
 ├── platformio.ini        # PlatformIO build config
 └── recordings/           # Output directory for sync.py (gitignored)
 ```
@@ -223,6 +223,8 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).
+
+A new recording saved by either sync path posts a "New recording added" notification on its own low-importance channel. A fixed notification ID means several files saved in one sync collapse into a single notification, and tapping it opens the app on the Recordings screen.
 
 ---
 

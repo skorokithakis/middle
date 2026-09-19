@@ -38,6 +38,13 @@ class MiddleApplication : Application() {
                 NotificationManager.IMPORTANCE_HIGH,
             )
         )
+        manager.createNotificationChannel(
+            NotificationChannel(
+                NEW_RECORDING_CHANNEL_ID,
+                getString(R.string.new_recording_notification_channel),
+                NotificationManager.IMPORTANCE_LOW,
+            )
+        )
     }
 
     companion object {
@@ -45,5 +52,7 @@ class MiddleApplication : Application() {
         const val SYNC_NOTIFICATION_ID = 1
         const val BATTERY_LOW_CHANNEL_ID = "middle_battery_low"
         const val BATTERY_LOW_NOTIFICATION_ID = 2
+        const val NEW_RECORDING_CHANNEL_ID = "middle_new_recording"
+        const val NEW_RECORDING_NOTIFICATION_ID = 3
     }
 }

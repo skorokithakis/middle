@@ -1,6 +1,7 @@
 package com.middle.app.ble
 
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
@@ -13,6 +14,7 @@ import android.os.ParcelUuid
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.middle.app.AppVisibility
+import com.middle.app.MainActivity
 import com.middle.app.MiddleApplication
 import com.middle.app.R
 import com.middle.app.data.RecordingsRepository
@@ -204,6 +206,7 @@ class SyncForegroundService : Service() {
                     repository = repository,
                     scope = sessionScope,
                     onRecordingSaved = { audioFile, filename ->
+                        postNewRecordingNotification()
                         if (settings.transcriptionEnabled) {
                             dispatchTranscriptionAndWebhook(audioFile, filename) {
                                 // The ring has no per-session transcription state, so a
@@ -425,6 +428,7 @@ class SyncForegroundService : Service() {
                     // the encoder does not assume a rate for other sources.
                     val audioFile = repository.saveEncodedRecording(imaData, filename, 16000)
                     Log.d(TAG, "[SyncDebug] saveEncodedRecording() returned path=${audioFile.absolutePath} size=${audioFile.length()} bytes.")
+                    postNewRecordingNotification()
 
                     manager.acknowledgeFile()
                     Log.d(TAG, "[SyncDebug] ACK sent for file ${i + 1}/$fileCount.")
@@ -549,6 +553,37 @@ class SyncForegroundService : Service() {
         notificationManager.notify(MiddleApplication.BATTERY_LOW_NOTIFICATION_ID, notification)
         settings.lastBatteryNotificationTime = now
         Log.d(TAG, "Battery low notification posted ($millivolts mV).")
+    }
+
+    /**
+     * Posts (or replaces) the "new recording added" notification. A fixed ID is
+     * used so several recordings saved during one sync collapse into a single
+     * notification instead of stacking up.
+     *
+     * Suppressing this while the app is in the foreground was considered and
+     * rejected; the notification is wanted even when the app is on screen.
+     */
+    private fun postNewRecordingNotification() {
+        val intent = Intent(this, MainActivity::class.java).apply {
+            putExtra(MainActivity.EXTRA_OPEN_RECORDINGS, true)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+
+        val notification = NotificationCompat.Builder(this, MiddleApplication.NEW_RECORDING_CHANNEL_ID)
+            .setContentTitle(getString(R.string.new_recording_notification_title))
+            .setContentText(getString(R.string.new_recording_notification_text))
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .build()
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(MiddleApplication.NEW_RECORDING_NOTIFICATION_ID, notification)
+        Log.d(TAG, "New recording notification posted.")
     }
 
     private fun generatePairingToken(): ByteArray {
