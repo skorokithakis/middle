@@ -60,6 +60,7 @@ fun RecordingsScreen(
 ) {
     val recordings by viewModel.recordings.collectAsState()
     val currentlyPlaying by viewModel.currentlyPlaying.collectAsState()
+    val pendingFilenames by viewModel.pendingFilenames.collectAsState()
     val syncState by SyncForegroundService.syncState.collectAsState()
     val batteryVoltage by SyncForegroundService.batteryVoltage.collectAsState()
     val activeDeviceType by SyncForegroundService.activeDeviceType.collectAsState()
@@ -180,10 +181,11 @@ fun RecordingsScreen(
                         RecordingItem(
                             recording = recording,
                             isPlaying = currentlyPlaying == recording,
+                            isPending = recording.audioFile.name in pendingFilenames,
                             onTogglePlayback = { viewModel.togglePlayback(recording) },
                             onDelete = { viewModel.deleteRecording(recording) },
-                            showResendWebhook = viewModel.webhookEnabled && (recording.hasTranscript || viewModel.transcriptionAvailable),
-                            onResendWebhook = { viewModel.sendWebhook(recording) },
+                            showRetry = !recording.hasTranscript || viewModel.webhookEnabled,
+                            onRetry = { viewModel.retryPipeline(recording) },
                         )
                     }
                 }
@@ -196,10 +198,11 @@ fun RecordingsScreen(
 private fun RecordingItem(
     recording: Recording,
     isPlaying: Boolean,
+    isPending: Boolean,
     onTogglePlayback: () -> Unit,
     onDelete: () -> Unit,
-    showResendWebhook: Boolean,
-    onResendWebhook: () -> Unit,
+    showRetry: Boolean,
+    onRetry: () -> Unit,
 ) {
     val context = LocalContext.current
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -293,11 +296,11 @@ private fun RecordingItem(
                     )
                 }
 
-                if (showResendWebhook) {
-                    IconButton(onClick = onResendWebhook) {
+                if (showRetry) {
+                    IconButton(onClick = onRetry) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
-                            contentDescription = "Resend webhook",
+                            contentDescription = "Retry",
                         )
                     }
                 }
@@ -309,6 +312,12 @@ private fun RecordingItem(
                     text = recording.transcriptText ?: "",
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 3,
+                )
+            } else if (isPending) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Transcription pending",
+                    style = MaterialTheme.typography.bodySmall,
                 )
             }
         }

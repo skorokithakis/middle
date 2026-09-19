@@ -17,11 +17,9 @@ import com.middle.app.AppVisibility
 import com.middle.app.MainActivity
 import com.middle.app.MiddleApplication
 import com.middle.app.R
+import com.middle.app.data.PipelineQueue
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
-import com.middle.app.data.WebhookClient
-import com.middle.app.data.WebhookLog
-import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -35,7 +33,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.coroutineContext
-import java.io.File
 import java.security.SecureRandom
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -61,6 +58,7 @@ class SyncForegroundService : Service() {
 
     private lateinit var repository: RecordingsRepository
     private lateinit var settings: Settings
+    private lateinit var pipelineQueue: PipelineQueue
 
     private val sessionChangeListener: (Settings.SessionChange) -> Unit = { change ->
         when (change) {
@@ -88,6 +86,7 @@ class SyncForegroundService : Service() {
         super.onCreate()
         repository = (application as MiddleApplication).repository
         settings = Settings(this)
+        pipelineQueue = (application as MiddleApplication).pipelineQueue
         _batteryVoltage.value = settings.lastBatteryVoltage
         startForegroundNotification(getString(R.string.sync_notification_idle))
         settings.addSessionChangeListener(sessionChangeListener)
@@ -187,8 +186,9 @@ class SyncForegroundService : Service() {
             // failed save the retry asks the ring for the collection whose save
             // failed instead of trusting the vendor's already-advanced index.
             // The session scope is a child of this loop, so everything the
-            // vendor launches into it is torn down with the loop, and cancelling
-            // the session cannot affect the service-wide transcription dispatch.
+            // vendor launches into it is torn down with the loop. Transcription
+            // is queued and runs outside this session scope, so cancelling the
+            // session cannot affect it.
             val sessionJob = SupervisorJob(coroutineContext[Job])
             val sessionScope = CoroutineScope(sessionJob + Dispatchers.Main)
             if (pendingRingIndexReset) {
@@ -205,13 +205,10 @@ class SyncForegroundService : Service() {
                     settings = settings,
                     repository = repository,
                     scope = sessionScope,
-                    onRecordingSaved = { audioFile, filename ->
+                    onRecordingSaved = { _, filename ->
                         postNewRecordingNotification()
                         if (settings.transcriptionEnabled) {
-                            dispatchTranscriptionAndWebhook(audioFile, filename) {
-                                // The ring has no per-session transcription state, so a
-                                // failed transcription only affects this recording.
-                            }
+                            pipelineQueue.enqueue(filename)
                         }
                     },
                     onBacklogSkipped = { count -> postBacklogSkippedNotification(count) },
@@ -350,7 +347,6 @@ class SyncForegroundService : Service() {
     }
 
     private suspend fun syncWithDevice(scanResult: ScanResult) {
-        (application as MiddleApplication).retryQueue.startRetryLoopIfNeeded()
         val manager = PendantBleManager(this)
         try {
             updateNotification(getString(R.string.sync_notification_connecting))
@@ -400,8 +396,6 @@ class SyncForegroundService : Service() {
                 return
             }
 
-            var skipTranscription = false
-
             // Enable notifications once for the whole session to avoid rapid
             // CCCD churn that destabilises the GATT link between files.
             manager.enableAudioNotifications()
@@ -433,17 +427,12 @@ class SyncForegroundService : Service() {
 
                     manager.acknowledgeFile()
                     Log.d(TAG, "[SyncDebug] ACK sent for file ${i + 1}/$fileCount.")
+                    if (settings.transcriptionEnabled) {
+                        pipelineQueue.enqueue(filename)
+                    }
                     // Brief pause between files to let the pendant settle before
                     // the next COMMAND_REQUEST_NEXT, reducing GATT instability.
                     delay(300)
-
-                    if (!skipTranscription && settings.transcriptionEnabled) {
-                        dispatchTranscriptionAndWebhook(audioFile, filename) {
-                            // Disable further transcription attempts this
-                            // session if the first one fails, same as sync.py.
-                            skipTranscription = true
-                        }
-                    }
                 }
 
                 val remainingFileCount = manager.readFileCount()
@@ -466,76 +455,6 @@ class SyncForegroundService : Service() {
                 Log.w(TAG, "Disconnect error: $exception")
             }
             updateNotification(getString(R.string.sync_notification_scanning))
-        }
-    }
-
-    /**
-     * Transcribes a saved recording and delivers the transcript to the webhook
-     * if one is configured. This is deliberately fire and forget: the caller
-     * must not wait for transcription or the webhook, because both take far
-     * longer than the per-file GATT pause the pendant transfer relies on.
-     *
-     * [onTranscriptionUnavailable] is invoked when transcription cannot be
-     * attempted or fails. It exists because the pendant disables transcription
-     * for the rest of the sync session after the first failure, while the ring
-     * has no session to disable; the decision cannot be returned because the
-     * failure is usually discovered inside the launched coroutine, long after
-     * this function has returned.
-     */
-    private fun dispatchTranscriptionAndWebhook(
-        audioFile: File,
-        filename: String,
-        onTranscriptionUnavailable: () -> Unit,
-    ) {
-        val provider = settings.transcriptionProvider
-        val apiKey = getSelectedProviderApiKey()
-        if (apiKey.isEmpty()) {
-            val message = "Transcription skipped: missing ${providerDisplayName(provider)} API key"
-            Log.w(TAG, message)
-            WebhookLog.error("$message ($filename)")
-            updateNotification(message)
-            onTranscriptionUnavailable()
-        } else {
-            scope.launch(Dispatchers.IO) {
-                val client = TranscriptionClient(provider, apiKey)
-                val text = client.transcribe(audioFile)
-                if (text != null) {
-                    repository.saveTranscript(text, audioFile)
-                    Log.d(TAG, "Saved transcript for $filename.")
-
-                    val webhookUrl = settings.webhookUrl.trim()
-                    if (settings.webhookEnabled && webhookUrl.isNotEmpty()) {
-                        val template = settings.webhookBodyTemplate.ifBlank {
-                            Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
-                        }
-                        WebhookLog.info("POST $webhookUrl ($filename)")
-                        val appRetryQueue = (application as MiddleApplication).retryQueue
-                        try {
-                            val result = WebhookClient.post(webhookUrl, text, template)
-                            if (result.success) {
-                                Log.d(TAG, "Webhook POST succeeded for $filename.")
-                                WebhookLog.info("${result.code} OK ($filename)")
-                            } else {
-                                Log.w(TAG, "Webhook POST failed with status ${result.code} for $filename.")
-                                WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
-                                if (result.code !in 400..499) {
-                                    appRetryQueue.enqueue(text, webhookUrl, template, filename)
-                                }
-                            }
-                        } catch (exception: Exception) {
-                            Log.w(TAG, "Webhook POST error for $filename: $exception")
-                            WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
-                            appRetryQueue.enqueue(text, webhookUrl, template, filename)
-                        }
-                    }
-                } else {
-                    val message = "Transcription failed (${providerDisplayName(provider)})"
-                    Log.w(TAG, message)
-                    WebhookLog.error("$message ($filename)")
-                    updateNotification(message)
-                    onTranscriptionUnavailable()
-                }
-            }
         }
     }
 
@@ -620,22 +539,6 @@ class SyncForegroundService : Service() {
 
     private fun hexToBytes(hex: String): ByteArray =
         ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }
-
-    private fun getSelectedProviderApiKey(): String {
-        return when (settings.transcriptionProvider) {
-            Settings.TRANSCRIPTION_PROVIDER_OPENAI -> settings.openAiApiKey.trim()
-            Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> settings.elevenLabsApiKey.trim()
-            else -> ""
-        }
-    }
-
-    private fun providerDisplayName(provider: String): String {
-        return when (provider) {
-            Settings.TRANSCRIPTION_PROVIDER_OPENAI -> "OpenAI"
-            Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> "ElevenLabs"
-            else -> provider
-        }
-    }
 
     companion object {
         private const val TAG = "SyncService"

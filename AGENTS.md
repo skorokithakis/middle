@@ -11,7 +11,7 @@
 - Build system: PlatformIO (`platformio.ini`).
 - Firmware environment: `seeed_xiao_esp32s3`.
 - Python runtime pattern: shebang with inline `uv` script metadata.
-- No dedicated test suite is currently present.
+- Android unit tests live under `android/app/src/test/` (see test commands).
 - No `.cursor/rules/`, `.cursorrules`, or `.github/copilot-instructions.md` files were found.
 
 ## cursor and copilot rules
@@ -43,7 +43,9 @@
 - If you add tests later, keep `uv` as the default runner for consistency.
 
 ## test commands
-- Current state: no automated tests are present.
+- Current state: Android unit tests exist under `android/app/src/test/`; no
+  firmware or Python tests are present.
+- Run all Android unit tests (from `android/`): `./gradlew :app:testDebugUnitTest`.
 - Firmware test harness command (if tests are added under PlatformIO):
 - Run all firmware tests: `pio test -e seeed_xiao_esp32s3`.
 - Run a single firmware test by name: `pio test -e seeed_xiao_esp32s3 -f <test_name>`.

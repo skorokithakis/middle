@@ -3,22 +3,23 @@ package com.middle.app
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import com.middle.app.data.PipelineQueue
 import com.middle.app.data.RecordingsRepository
-import com.middle.app.data.WebhookRetryQueue
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 
 class MiddleApplication : Application() {
     lateinit var repository: RecordingsRepository
-    lateinit var retryQueue: WebhookRetryQueue
+    lateinit var pipelineQueue: PipelineQueue
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
         super.onCreate()
         repository = RecordingsRepository(this)
-        retryQueue = WebhookRetryQueue(this, applicationScope)
+        pipelineQueue = PipelineQueue(this, applicationScope, repository)
+        pipelineQueue.start()
         createNotificationChannel()
     }
 

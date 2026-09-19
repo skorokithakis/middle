@@ -12,6 +12,13 @@ import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.TimeUnit
 
+sealed class TranscriptionResult {
+    data class Success(val text: String) : TranscriptionResult()
+    data class HttpError(val code: Int, val body: String) : TranscriptionResult()
+    data class NetworkError(val exception: Exception) : TranscriptionResult()
+    data class ParseError(val message: String) : TranscriptionResult()
+}
+
 class TranscriptionClient(
     private val provider: String,
     private val apiKey: String,
@@ -23,18 +30,20 @@ class TranscriptionClient(
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    fun transcribe(audioFile: File): String? {
+    fun transcribe(audioFile: File): TranscriptionResult {
         return when (provider) {
             Settings.TRANSCRIPTION_PROVIDER_OPENAI -> transcribeOpenAi(audioFile)
             Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> transcribeElevenLabs(audioFile)
             else -> {
                 Log.e(TAG, "Unsupported transcription provider: $provider")
-                null
+                TranscriptionResult.NetworkError(
+                    IllegalArgumentException("Unsupported transcription provider: $provider"),
+                )
             }
         }
     }
 
-    private fun transcribeOpenAi(audioFile: File): String? {
+    private fun transcribeOpenAi(audioFile: File): TranscriptionResult {
         val mimeType = "audio/mp4"
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -54,24 +63,24 @@ class TranscriptionClient(
             .build()
 
         return try {
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val bodyText = response.body?.string() ?: ""
-                Log.e(TAG, "Transcription failed: ${response.code} $bodyText")
-                WebhookLog.error("Transcription failed (OpenAI): ${response.code} $bodyText")
-                null
-            } else {
-                val body = response.body?.string() ?: return null
-                parseTranscriptText(body, "OpenAI")
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Transcription failed: ${response.code} $body")
+                    WebhookLog.error("Transcription failed (OpenAI): ${response.code} $body")
+                    TranscriptionResult.HttpError(response.code, body)
+                } else {
+                    parseTranscriptText(body, "OpenAI")
+                }
             }
         } catch (exception: Exception) {
             Log.e(TAG, "Transcription request failed: $exception")
             WebhookLog.error("Transcription request failed (OpenAI): ${exception::class.simpleName}: ${exception.message}")
-            null
+            TranscriptionResult.NetworkError(exception)
         }
     }
 
-    private fun transcribeElevenLabs(audioFile: File): String? {
+    private fun transcribeElevenLabs(audioFile: File): TranscriptionResult {
         val mimeType = "audio/mp4"
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -90,27 +99,27 @@ class TranscriptionClient(
             .build()
 
         return try {
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val bodyText = response.body?.string() ?: ""
-                Log.e(TAG, "Transcription failed: ${response.code} $bodyText")
-                WebhookLog.error("Transcription failed (ElevenLabs): ${response.code} $bodyText")
-                null
-            } else {
-                val body = response.body?.string() ?: return null
-                parseTranscriptText(body, "ElevenLabs")
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Transcription failed: ${response.code} $body")
+                    WebhookLog.error("Transcription failed (ElevenLabs): ${response.code} $body")
+                    TranscriptionResult.HttpError(response.code, body)
+                } else {
+                    parseTranscriptText(body, "ElevenLabs")
+                }
             }
         } catch (exception: Exception) {
             Log.e(TAG, "Transcription request failed: $exception")
             WebhookLog.error("Transcription request failed (ElevenLabs): ${exception::class.simpleName}: ${exception.message}")
-            null
+            TranscriptionResult.NetworkError(exception)
         }
     }
 
-    private fun parseTranscriptText(body: String, providerDisplayName: String): String? {
+    private fun parseTranscriptText(body: String, providerDisplayName: String): TranscriptionResult {
         return try {
             val json = JSONObject(body)
-            when {
+            val text = when {
                 json.has("text") -> json.optString("text")
                 json.has("transcription") -> json.optString("transcription")
                 json.has("transcript") -> json.optString("transcript")
@@ -121,11 +130,18 @@ class TranscriptionClient(
                     null
                 }
             }?.takeIf { it.isNotBlank() }
+            if (text == null) {
+                TranscriptionResult.ParseError(
+                    "Transcription response missing text field ($providerDisplayName)",
+                )
+            } else {
+                TranscriptionResult.Success(text)
+            }
         } catch (exception: Exception) {
             val message = "Transcription response parse failed ($providerDisplayName): ${exception::class.simpleName}: ${exception.message}"
             Log.e(TAG, "$message. Body: $body")
             WebhookLog.error(message)
-            null
+            TranscriptionResult.ParseError(message)
         }
     }
 

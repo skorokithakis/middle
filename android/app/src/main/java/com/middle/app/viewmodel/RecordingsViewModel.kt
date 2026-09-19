@@ -2,7 +2,6 @@ package com.middle.app.viewmodel
 
 import android.app.Application
 import android.media.MediaPlayer
-import android.util.Log
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,9 +9,6 @@ import com.middle.app.MiddleApplication
 import com.middle.app.data.Recording
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
-import com.middle.app.data.WebhookClient
-import com.middle.app.data.WebhookLog
-import com.middle.app.transcription.TranscriptionClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -25,11 +21,7 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
 
     val repository = (application as MiddleApplication).repository
     private val settings = Settings(application)
-    private val retryQueue = (application as MiddleApplication).retryQueue
-
-    init {
-        retryQueue.startRetryLoopIfNeeded()
-    }
+    private val pipelineQueue = (application as MiddleApplication).pipelineQueue
 
     val recordings: StateFlow<List<Recording>> = repository.recordings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -67,64 +59,12 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     val webhookEnabled: Boolean
         get() = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
 
-    val transcriptionAvailable: Boolean
-        get() = settings.transcriptionEnabled && getSelectedProviderApiKey().isNotEmpty()
+    val pendingFilenames: StateFlow<Set<String>>
+        get() = pipelineQueue.pendingFilenames
 
-    fun sendWebhook(recording: Recording) {
-        val webhookUrl = settings.webhookUrl.trim()
-        if (!settings.webhookEnabled || webhookUrl.isEmpty()) return
-
-        viewModelScope.launch(Dispatchers.IO) {
-            val existingTranscript = recording.transcriptText
-            val transcript: String
-            if (existingTranscript == null) {
-                val provider = settings.transcriptionProvider
-                val apiKey = getSelectedProviderApiKey()
-                if (apiKey.isEmpty()) {
-                    WebhookLog.error("Transcription skipped: missing ${providerDisplayName(provider)} API key (${recording.audioFile.name})")
-                    showToast("Transcription skipped: missing ${providerDisplayName(provider)} API key")
-                    return@launch
-                }
-
-                val transcribed = TranscriptionClient(provider, apiKey).transcribe(recording.audioFile)
-                if (transcribed == null) {
-                    Log.w(TAG, "Transcription failed for ${recording.audioFile.name}, skipping webhook.")
-                    WebhookLog.error("Transcription failed (${providerDisplayName(provider)}) (${recording.audioFile.name})")
-                    showToast("Transcription failed (${providerDisplayName(provider)})")
-                    return@launch
-                }
-                repository.saveTranscript(transcribed, recording.audioFile)
-                transcript = transcribed
-            } else {
-                transcript = existingTranscript
-            }
-
-            val template = settings.webhookBodyTemplate.ifBlank {
-                Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
-            }
-            val filename = recording.audioFile.name
-            WebhookLog.info("POST $webhookUrl ($filename)")
-            try {
-                val result = WebhookClient.post(webhookUrl, transcript, template)
-                if (result.success) {
-                    Log.d(TAG, "Webhook resend succeeded for $filename.")
-                    WebhookLog.info("${result.code} OK ($filename)")
-                    showToast("Webhook sent")
-                } else {
-                    Log.w(TAG, "Webhook resend failed with status ${result.code} for $filename.")
-                    WebhookLog.error("${result.code} ${result.message} ($filename): ${result.body}")
-                    showToast("Webhook failed (${result.code})")
-                    if (result.code !in 400..499) {
-                        retryQueue.enqueue(transcript, webhookUrl, template, filename)
-                    }
-                }
-            } catch (exception: Exception) {
-                Log.w(TAG, "Webhook resend error for $filename: $exception")
-                WebhookLog.error("$filename: ${exception::class.simpleName}: ${exception.message}")
-                showToast("Webhook failed: ${exception.message}")
-                retryQueue.enqueue(transcript, webhookUrl, template, filename)
-            }
-        }
+    fun retryPipeline(recording: Recording) {
+        pipelineQueue.retryNow(recording.audioFile.name)
+        viewModelScope.launch { showToast("Queued") }
     }
 
     fun deleteRecording(recording: Recording) {
@@ -132,16 +72,15 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
             stopPlayback()
         }
         viewModelScope.launch(Dispatchers.IO) {
-            retryQueue.removeForRecording(recording.audioFile.name)
+            pipelineQueue.removeForRecording(recording.audioFile.name)
             repository.deleteRecording(recording)
         }
     }
 
     fun deleteAllRecordings() {
         stopPlayback()
-        val currentRecordings = recordings.value
         viewModelScope.launch(Dispatchers.IO) {
-            currentRecordings.forEach { retryQueue.removeForRecording(it.audioFile.name) }
+            pipelineQueue.removeAll()
             repository.deleteAllRecordings()
         }
     }
@@ -159,25 +98,5 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         withContext(Dispatchers.Main) {
             Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
         }
-    }
-
-    private fun getSelectedProviderApiKey(): String {
-        return when (settings.transcriptionProvider) {
-            Settings.TRANSCRIPTION_PROVIDER_OPENAI -> settings.openAiApiKey.trim()
-            Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> settings.elevenLabsApiKey.trim()
-            else -> ""
-        }
-    }
-
-    private fun providerDisplayName(provider: String): String {
-        return when (provider) {
-            Settings.TRANSCRIPTION_PROVIDER_OPENAI -> "OpenAI"
-            Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> "ElevenLabs"
-            else -> provider
-        }
-    }
-
-    companion object {
-        private const val TAG = "RecordingsViewModel"
     }
 }

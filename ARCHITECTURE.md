@@ -21,28 +21,30 @@ middle/
 │       │   ├── PendantBleManager.kt    # Nordic BLE manager: scan, connect, sync orchestration
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
-│       ├── data/         # Recordings, webhook client, retry queue, settings
+│       ├── data/         # Recordings, webhook client, pipeline queue, settings
+│       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs (one JSON file per recording)
+│       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
 │       │   ├── RecordingsRepository.kt # StateFlow of recordings; encodes IMA→M4A on save
 │       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (API key, toggles, webhook, sync device type, ring address); JSON backup export/import
 │       │   ├── WebhookClient.kt        # OkHttp POST with Basic Auth from URL credentials
-│       │   ├── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
-│       │   └── WebhookRetryQueue.kt    # JSON-file-backed retry queue with exponential backoff
+│       │   └── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
 │       ├── audio/        # IMA ADPCM decoder, audio encoder
 │       │   ├── ImaAdpcmDecoder.kt      # Pure-Kotlin ADPCM decoder (mirrors firmware exactly)
 │       │   └── AudioEncoder.kt         # MediaCodec AAC encoder → M4A via MediaMuxer
 │       ├── transcription/
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
-│       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/resend-webhook
+│       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
 │       │   ├── SettingsScreen.kt       # API key, toggles, webhook, sync device and ring picker, settings backup export/import
 │       │   ├── LogScreen.kt            # Webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
-│       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual webhook resend
+│       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual pipeline retry
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
-│       └── MiddleApplication.kt        # App singleton: RecordingsRepository, WebhookRetryQueue, notification channels
+│       ├── BootReceiver.kt             # Restarts SyncForegroundService after reboot when permissions allow
+│       └── MiddleApplication.kt        # App singleton: RecordingsRepository, PipelineQueue, notification channels
 ├── platformio.ini        # PlatformIO build config
 └── recordings/           # Output directory for sync.py (gitignored)
 ```
@@ -79,7 +81,7 @@ middle/
 - **HTTP**: OkHttp 4.12.0 (webhook delivery and transcription API calls)
 - **Transcription**: OpenAI API via OkHttp (raw HTTP multipart, not SDK)
 - **Storage**: Encrypted SharedPreferences (`security-crypto`) for API key and all
-  settings; plain JSON files under `filesDir/webhooks/` for retry queue;
+  settings; plain JSON job files under `filesDir/pipeline/` for the queue;
   M4A files under `filesDir/recordings/`
 - **Playback**: `MediaPlayer` (standard Android, not ExoPlayer despite the dependency)
 - **Audio encoding**: `MediaCodec` AAC encoder + `MediaMuxer` → M4A (not MP3, because
@@ -150,25 +152,32 @@ a sync-only tap gesture).
 
 ---
 
-## Webhook retry / backoff
+## Pipeline queue
 
-**All retry logic lives in one file**:
-`android/app/src/main/java/com/middle/app/data/WebhookRetryQueue.kt`
+Transcription and webhook delivery are handled by
+`android/.../data/PipelineQueue.kt`; `PipelinePolicy.kt` holds the pure
+backoff and outcome rules (unit-tested by `PipelinePolicyTest.kt`).
 
 Key details:
-- Pending deliveries are persisted as JSON files under `filesDir/webhooks/*.json`
-  (survives process death).
-- **Backoff formula**: `min((1L shl retryCount) * 2_000ms, 24h)` — binary
-  exponential backoff, capped at 24 hours.
-- **Max retries**: 10. After 10 failures the entry is deleted and logged as
-  abandoned.
-- **4xx responses** are treated as permanent failures (deleted immediately, no
-  retry). **5xx and exceptions** are retryable.
-- The retry loop (`startRetryLoopIfNeeded`) runs as a coroutine on `Dispatchers.IO`
-  and polls every 1 second while entries remain.
-- HTTP delivery is in `WebhookClient.kt` (OkHttp, 10 s connect / 30 s read timeout,
-  Basic Auth extracted from URL credentials).
-- Manual resend is available from `RecordingsViewModel.sendWebhook()` (triggered
+- One JSON job file per recording under `filesDir/pipeline/` (survives process
+  death). The file stores only the stage: `TRANSCRIBE` or `WEBHOOK`. The old
+  `filesDir/webhooks/` format is discarded on startup, not migrated.
+- A saved recording is enqueued at `TRANSCRIBE`; success advances the job to
+  `WEBHOOK` when a webhook is configured, otherwise the job is deleted.
+- Backoff is in memory, not persisted: starts at 2 s, doubles per failed
+  attempt, capped at 30 minutes. A restart resets per-job state.
+- A missing API key is not an attempt: it waits a fixed 60 s recheck instead of
+  the attempt backoff.
+- A `ConnectivityManager` callback provides an advisory offline gate. A job
+  parked offline is let through once it has been offline for the 30-minute cap,
+  so a wrong offline signal cannot hold it forever.
+- Error classes: transcription errors are transient (retry), auth (401/403,
+  skips the rest of this pass), or bad-file (400/413/415/422, drops the job);
+  webhook responses are success, drop (4xx except 408/429), or retry. Nothing
+  is abandoned except transcription bad-file and webhook 4xx.
+- HTTP delivery is in `WebhookClient.kt` (OkHttp, 10 s connect / 30 s read
+  timeout, Basic Auth extracted from URL credentials).
+- Manual retry is available from `RecordingsViewModel.retryPipeline()` (triggered
   from the recordings list UI).
 
 ---
@@ -185,11 +194,13 @@ level; the only seam is `RecordingsRepository`, which both feed.
 
 Each loop restarts itself after a failed or finished session, and the service
 cancels the running loop when the setting changes, so no app restart is needed.
-Both paths call `dispatchTranscriptionAndWebhook()`, a plain private function on
-the service, which transcribes the saved recording and POSTs the transcript in a
-fire-and-forget coroutine. The pendant passes a callback that disables
-transcription for the rest of its sync session on the first failure; the ring
-has no session, so its callback is a no-op.
+Both paths hand each saved recording to the process-wide `PipelineQueue` (via
+`MiddleApplication`), which transcribes and delivers it outside the sync
+session, so a cancelled session cannot affect an in-flight job.
+
+`BootReceiver` restarts `SyncForegroundService` after `BOOT_COMPLETED` when the
+runtime permissions it needs are already granted; otherwise the user must open
+the app so it can request them.
 
 `Settings` exposes `addDeviceTypeListener`/`removeDeviceTypeListener` because
 `EncryptedSharedPreferences` change listeners only fire on the writing instance,
@@ -218,7 +229,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 
 | Screen | Route | Description |
 |---|---|---|
-| Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/resend-webhook buttons. Sync status and battery voltage shown in a header card. |
+| Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. |
 | Log | `log` | Monospace webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
 
@@ -245,10 +256,12 @@ A new recording saved by either sync path posts a "New recording added" notifica
 | `src/main.cpp:send_notification()` (line 570) | NimBLE notification retry loop (up to 200 attempts, 5 ms delay) |
 | `src/main.cpp:record_and_save()` (line 434) | I2S capture, ring buffer, FreeRTOS writer task, ADPCM encoding |
 | `sync.py:sync_recordings()` (line 210) | BLE transfer loop with per-file retry (`MAX_FILE_TRANSFER_ATTEMPTS=3`) and stall/total timeouts |
-| `android/.../WebhookRetryQueue.kt` | Webhook persistence, exponential backoff, 4xx vs 5xx handling |
+| `android/.../PipelineQueue.kt` | Durable transcribe/webhook jobs, in-memory backoff, network gate |
+| `android/.../PipelinePolicy.kt` | Pure backoff and outcome classification rules |
 | `android/.../WebhookClient.kt` | OkHttp POST, Basic Auth from URL credentials |
+| `android/.../BootReceiver.kt` | Restarts the sync service after reboot when permissions allow |
 | `android/.../PendantBleManager.kt` | Nordic BLE manager: scan, connect, sync orchestration |
-| `android/.../SyncForegroundService.kt` | Foreground service: selects the pendant or ring loop, pairing handshake, per-file sync, shared transcription/webhook dispatch |
+| `android/.../SyncForegroundService.kt` | Foreground service: selects the pendant or ring loop, pairing handshake, per-file sync, enqueues saved recordings for the pipeline |
 | `android/.../IndexSyncLoop.kt` | Ring path: awaits Bluetooth, collects vendor satellite statuses, persists completed ring audio |
 | `android/.../TranscriptionClient.kt` | OpenAI transcription API calls |
 | `android/.../AudioEncoder.kt` | MediaCodec AAC encoder + MediaMuxer → M4A |
@@ -287,8 +300,9 @@ uv run python -m py_compile sync.py    # syntax check
 
 - **Error handling**: fail fast; no silent swallowing. BLE and device errors are
   logged with context before returning. Webhook 4xx errors are abandoned
-  immediately (not retried). `TranscriptionClient.transcribe()` returns null on
-  failure (caller decides whether to skip or retry).
+  immediately (not retried). `TranscriptionClient.transcribe()` returns a
+  `TranscriptionResult` (`Success`/`HttpError`/`NetworkError`/`ParseError`);
+  `PipelinePolicy` classifies it into retry/skip/drop.
 - **Logging**: firmware uses `Serial.printf` with subsystem tags (`[ble]`, `[rec]`,
   `[bat]`, `[flash]`). Python uses a timestamped `log()` helper. Android uses
   `android.util.Log` + `WebhookLog` (in-memory StateFlow for the UI).
@@ -312,9 +326,9 @@ uv run python -m py_compile sync.py    # syntax check
 - **No security on BLE**: any device that knows the service UUID can connect and
   download recordings. A pre-shared key is listed in `TODO.md` but not yet
   implemented.
-- **No automated tests**: no firmware tests, no Python tests, no Android
-  instrumentation tests. The `AGENTS.md` documents the intended test commands
-  for when they are added.
+- **Limited automated tests**: `PipelinePolicyTest.kt` unit-tests backoff and
+  outcome classification. There are no firmware tests, Python tests, or Android
+  instrumentation tests. `AGENTS.md` documents the intended commands.
 - **`backgroundSyncEnabled` setting is stored but not enforced**: `Settings.kt`
   exposes the toggle and `SettingsScreen.kt` renders it, but
   `SyncForegroundService` does not read it — the service always scans regardless
