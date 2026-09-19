@@ -168,11 +168,21 @@ class Settings(context: Context) {
             prefs.edit().apply {
                 if (value == null) {
                     remove(KEY_LAST_SUCCESSFUL_COLLECTION_INDEX)
+                    // A reset index means the ring is unknown again, so the
+                    // first-sync backlog decision has to be made afresh.
+                    remove(KEY_RING_BACKLOG_DECIDED)
                 } else {
                     putInt(KEY_LAST_SUCCESSFUL_COLLECTION_INDEX, value)
                 }
             }.apply()
         }
+
+    // Records that the first-sync backlog decision has been made, so a first
+    // transfer that fails before committing an index cannot make the next
+    // range look like a fresh backlog. Runtime state, so it is not exported.
+    var ringBacklogDecided: Boolean
+        get() = prefs.getBoolean(KEY_RING_BACKLOG_DECIDED, false)
+        set(value) = prefs.edit().putBoolean(KEY_RING_BACKLOG_DECIDED, value).apply()
 
     val isPaired: Boolean
         get() = pairedDeviceAddress.isNotEmpty() && pairingToken.isNotEmpty()
@@ -311,6 +321,7 @@ class Settings(context: Context) {
         private const val KEY_PAIRING_TOKEN = "pairing_token"
         private const val KEY_RING_DEVICE_ADDRESS = "ring_device_address"
         private const val KEY_LAST_SUCCESSFUL_COLLECTION_INDEX = "last_successful_collection_index"
+        private const val KEY_RING_BACKLOG_DECIDED = "ring_backlog_decided"
         const val DEFAULT_WEBHOOK_BODY_TEMPLATE = "{\"phrase\": \"\$transcript\"}"
 
         // A backup is one flat object tagged with the format version. New

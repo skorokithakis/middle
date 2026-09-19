@@ -84,7 +84,7 @@ class IndexSyncLoop(
             // Returning normally matters: SyncForegroundService restarts the ring
             // session after run() returns, and the fresh session re-seeds its
             // index from disk, so the skip must not surface as a failure.
-            Log.d(TAG, "Ended first ring session early after skipping the backlog.")
+            Log.d(TAG, "Ended the ring session early after skipping the backlog.")
         }
     }
 
@@ -113,20 +113,44 @@ class IndexSyncLoop(
     }
 
     /**
-     * On the first sync from a ring, no index is stored yet, so the vendor would
-     * pull its entire backlog. Committing the last index in the range it reports
-     * leaves the next session starting beyond that range and transferring
-     * nothing, which is exactly the state a completed sync leaves behind.
+     * Skips a backlog the user did not ask for, in two cases that both end up
+     * committing the last index in the offered range:
+     *
+     * - The first sync from a ring has no stored index, so the vendor would pull
+     *   its entire backlog. Committing the last index leaves the next session
+     *   starting beyond the range, exactly the state a completed sync leaves.
+     *   That skip-or-import decision is recorded durably, so a first transfer
+     *   that fails before committing cannot turn the next range into a skipped
+     *   backlog.
+     * - The ring's collection store was cleared (pairing, SOS reset, factory
+     *   reset), so its indices restart at 0 while the stored index stays high.
+     *   The vendor then computes a start past everything it has and transfers
+     *   nothing forever; committing the range's last index repairs it.
      */
     private fun handleTransferStarted(transferStatus: TransferStatus.TransferStarted) {
-        // A null stored index means this ring has never been synced: a fresh
-        // install or a newly selected ring. Both should skip the existing
-        // backlog, so this is the only condition.
-        if (settings.lastSuccessfulCollectionIndex != null) return
-
         val range = transferStatus.willTransferRange
-        // Write durably only. The in-memory flow still reads null, but the
-        // session ends below, so the next session is what must see the value.
+        val stored = settings.lastSuccessfulCollectionIndex
+
+        if (stored != null) {
+            // A stored index above the range means the ring moved backwards,
+            // which only happens when its store was cleared. Repairing is safe
+            // for any range size, including a single collection, or a cleared
+            // ring would stay unrepaired and sync would stay dead.
+            if (stored <= range.last) return
+        } else {
+            // No stored index means the ring has never been synced, but that is
+            // also true after a first transfer failed before committing one.
+            // The decision is therefore recorded durably before the outcome is
+            // known, so a failed import cannot make the next range look like a
+            // fresh backlog and get skipped as one. Only a range with more than
+            // one collection is a backlog; a lone one is a real recording.
+            val decided = settings.ringBacklogDecided
+            settings.ringBacklogDecided = true
+            if (decided || range.last <= range.first) return
+        }
+
+        // Write durably only. The in-memory flow still reads the old value, but
+        // the session ends below, so the next session is what must see the value.
         collectionIndexStorage.commitLastSuccessfulCollectionIndex(range.last)
         onBacklogSkipped(range.last - range.first + 1)
         // Abort from inside the scanning collect, before any audio moves.
