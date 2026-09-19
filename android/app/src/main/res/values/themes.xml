@@ -1,4 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="Theme.Middle" parent="Theme.Material3.Light.NoActionBar" />
+
+    <!-- Assistant popup: a small floating card over the current app. The
+         background is transparent so Compose draws the Surface card. -->
+    <style name="Theme.Middle.Assist" parent="Theme.Material3.DayNight.Dialog">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">true</item>
+    </style>
 </resources>

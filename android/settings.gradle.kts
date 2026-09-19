@@ -11,6 +11,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Silero VAD is only published on JitPack; the owner accepted this.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

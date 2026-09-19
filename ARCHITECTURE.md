@@ -33,9 +33,12 @@ middle/
 │       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (keys, toggles, calendar, actions, device); migrates the legacy webhook; version 2 JSON backup
 │       │   ├── WebhookClient.kt        # OkHttp POST, Basic Auth from URL credentials, $transcript/$rest body substitution
 │       │   └── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
-│       ├── audio/        # IMA ADPCM decoder, audio encoder, phone microphone capture
+│       ├── audio/        # IMA ADPCM decoder, audio encoder, phone mic capture and VAD
 │       │   ├── ImaAdpcmDecoder.kt      # Pure-Kotlin ADPCM decoder (mirrors firmware exactly)
-│       │   ├── PhoneRecorder.kt        # AudioRecord mic capture → PCM16, 5-minute cap
+│       │   ├── PhoneRecorder.kt        # AudioRecord mic capture → PCM16, 5-minute cap, optional endpointer
+│       │   ├── SpeechEndpointer.kt     # Reframes PCM16 chunks into 1024-byte frames; continue/save/discard decisions
+│       │   ├── SileroClassifier.kt     # Silero VAD adapter for SpeechEndpointer (JitPack dependency)
+│       │   ├── CaptureEndReason.kt     # Why a mic capture ended (speech/no speech/cap/failed)
 │       │   └── AudioEncoder.kt         # MediaCodec AAC encoder → M4A via MediaMuxer
 │       ├── transcription/
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
@@ -51,6 +54,7 @@ middle/
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual pipeline retry
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
+│       ├── AssistActivity.kt           # System ASSIST/VOICE_COMMAND target: VAD mic capture in a dialog card
 │       ├── BootReceiver.kt             # Restarts SyncForegroundService after reboot when permissions allow
 │       └── MiddleApplication.kt        # App singleton: RecordingsRepository, PipelineQueue, notification channels
 ├── platformio.ini        # PlatformIO build config
@@ -80,8 +84,8 @@ middle/
 - **Output format**: MP3 (64 kbps, mono, 16 kHz), saved to `recordings/`
 
 ### Android app (`android/`)
-- **Language**: Kotlin
-- **UI**: Jetpack Compose + Material3 (`compose-bom:2025.01.01`)
+- **Language**: Kotlin 2.2.21 (AGP 8.13.2, Gradle 8.14.3)
+- **UI**: Jetpack Compose + Material3 (`compose-bom:2025.09.00`)
 - **Navigation**: `navigation-compose` with a `ModalNavigationDrawer` (hamburger menu)
 - **BLE**: Nordic BLE library (`no.nordicsemi.android:ble:2.7.4` + `-ktx`) for the
   pendant; haversine Android library (`io.github.coredevices.haversine:haversine-android`)
@@ -94,7 +98,10 @@ middle/
 - **Playback**: `MediaPlayer` (standard Android, not ExoPlayer despite the dependency)
 - **Audio encoding**: `MediaCodec` AAC encoder + `MediaMuxer` → M4A (not MP3, because
   Android has no built-in MP3 encoder; OpenAI accepts M4A fine)
-- **Min SDK**: 26 / Target SDK: 35
+- **Speech detection**: Silero VAD (`com.github.gkonovalov.android-vad:silero:2.0.10`,
+  only published on JitPack) drives automatic capture stop for the phone mic and the
+  system-assistant path
+- **SDK levels**: minSdk 26 / targetSdk 35 / compileSdk 36 (compileSdk 36 because the haversine AAR declares minCompileSdk 36)
 
 ---
 
@@ -334,9 +341,23 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
 | Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields. Top bar adds an alarm, reminder or webhook action. A calendar row picks the calendar for reminders, and an overlay-permission card is shown when the permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
-| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import. |
+| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
+| Assistant | `ASSIST` / `VOICE_COMMAND` | Not a nav route: a dialog-style card shown when the system assistant is triggered (long-press power). Shows "Listening…" and elapsed time with a Stop button; Silero VAD ends the recording when the speaker stops, then it saves through the same pipeline. Has no launcher icon and is excluded from recents. |
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).
+
+The system assistant target is `AssistActivity`. Android's assistant role
+(`ROLE_ASSISTANT`) cannot be requested, so the Settings screen only deep-links to
+`Settings.ACTION_VOICE_INPUT_SETTINGS` for the user to pick Middle. Once selected,
+long-pressing power starts the activity, which captures from the phone mic with a
+Silero VAD endpointer (`audio/SpeechEndpointer.kt` wrapping `audio/SileroClassifier.kt`)
+instead of running until the user stops. The model's 1500 ms silence hysteresis
+supplies the speech-to-silence edge, and a 5 s no-speech timeout discards a capture
+in which nobody spoke. Leaving the activity stops and saves what was captured, like
+releasing the in-app record button, and the save runs on the application scope so
+finishing the dialog cannot cut it short. The Silero model and its ONNX runtime are
+only published on JitPack (`com.github.gkonovalov.android-vad:silero`), which is why
+the build adds the JitPack Maven repository.
 
 The Settings screen can export the configuration to a JSON file and import one
 back. The file is one flat object tagged `version: 2` (`BACKUP_VERSION`), keyed
@@ -436,9 +457,10 @@ uv run python -m py_compile sync.py    # syntax check
   outcome classification; `ActionTest.kt` covers action JSON parsing and
   round-tripping; `ActionMatcherTest.kt` the ordered pattern/rest rules;
   `ActionRunnerTest.kt` the time/calendar helpers; `WebhookClientTest.kt` the
-  body template substitution; and `TimeParseClientTest.kt` the time-parse
-  response. There are no firmware tests, Python tests, or Android
-  instrumentation tests. `AGENTS.md` documents the intended commands.
+  body template substitution; `TimeParseClientTest.kt` the time-parse response;
+  and `SpeechEndpointerTest.kt` the VAD endpointer's reframing and stop/discard
+  rules. There are no firmware tests, Python tests, or Android instrumentation
+  tests. `AGENTS.md` documents the intended commands.
 - **`backgroundSyncEnabled` setting is stored but not enforced**: `Settings.kt`
   exposes the toggle and `SettingsScreen.kt` renders it, but
   `SyncForegroundService` does not read it — the service always scans regardless

@@ -162,3 +162,7 @@
   reproducible across machines and no per-machine debug key is generated.
 - When working on the Android app, try to install it when done, with
  `./gradlew installDebug`.
+- Dependencies: Silero VAD (`com.github.gkonovalov.android-vad:silero`) is only
+  published on JitPack, so `settings.gradle.kts` adds the `https://jitpack.io` repo.
+- Build environment: the default Java 25 and the read-only `$HOME` break Gradle, so
+  set `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`, `ANDROID_HOME=/home/stavros/.cache/android-sdk` and `GRADLE_USER_HOME=/home/stavros/.cache/gradle-home`.

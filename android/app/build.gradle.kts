@@ -86,6 +86,9 @@ dependencies {
     // Vendor library that speaks the Pebble Index 01 ring's closed BLE protocol.
     implementation("io.github.coredevices.haversine:haversine-android:2263387")
 
+    // Silero VAD for speech-end detection; only published on JitPack.
+    implementation("com.github.gkonovalov.android-vad:silero:2.0.10")
+
     // OkHttp for OpenAI API calls.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 

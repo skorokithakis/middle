@@ -5,6 +5,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.SystemClock
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,6 +35,10 @@ class PhoneRecorder(
     private class Capture(
         val record: AudioRecord,
         val pcm: ByteArrayOutputStream,
+        // Optional speech endpointer and its result callback; both null for
+        // callers that stop capture themselves.
+        val endpointer: SpeechEndpointer?,
+        val onCaptureEnded: ((CaptureEndReason) -> Unit)?,
     ) {
         // Stored per capture so a stop can join only its own read loop even
         // after a new capture has already started.
@@ -51,8 +56,20 @@ class PhoneRecorder(
     // still be released if the ViewModel is cleared right after [stop].
     private val teardownScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** Starts capture in [scope]. Returns false when the mic is unavailable. */
-    fun start(scope: CoroutineScope): Boolean {
+    /**
+     * Starts capture in [scope]. Returns false when the mic is unavailable.
+     *
+     * When [endpointer] is supplied, each chunk is classified on the read loop
+     * and capture ends on its own once speech stops or the no-speech timeout
+     * elapses. [onCaptureEnded] then reports why, including when the five-minute
+     * cap ends capture. Both default to null, so callers that stop capture
+     * themselves are unaffected.
+     */
+    fun start(
+        scope: CoroutineScope,
+        endpointer: SpeechEndpointer? = null,
+        onCaptureEnded: ((CaptureEndReason) -> Unit)? = null,
+    ): Boolean {
         synchronized(lock) {
             if (capture != null) return false
 
@@ -107,7 +124,7 @@ class PhoneRecorder(
                 return false
             }
 
-            val newCapture = Capture(record, pcm)
+            val newCapture = Capture(record, pcm, endpointer, onCaptureEnded)
             capture = newCapture
             newCapture.readJob = scope.launch(Dispatchers.IO) { readLoop(newCapture) }
             return true
@@ -138,7 +155,7 @@ class PhoneRecorder(
         active.readJob = null
         teardownScope.launch {
             readJob?.cancelAndJoin()
-            if (markRecordReleased(active)) releaseRecord(active.record)
+            if (markRecordReleased(active)) releaseRecord(active)
         }
         return pcm
     }
@@ -152,48 +169,84 @@ class PhoneRecorder(
         }
         active.readJob?.cancel()
         active.readJob = null
-        if (markRecordReleased(active)) releaseRecord(active.record)
+        if (markRecordReleased(active)) releaseRecord(active)
     }
 
     private suspend fun readLoop(owned: Capture) {
         val record = owned.record
         val pcm = owned.pcm
+        val endpointer = owned.endpointer
         val chunk = ByteArray(CHUNK_BYTES)
         val deadline = SystemClock.elapsedRealtime() + MAX_DURATION_MILLIS
-        while (currentCoroutineContext().isActive) {
-            val read = try {
-                record.read(chunk, 0, chunk.size)
-            } catch (exception: IllegalStateException) {
-                // release() from a cleared ViewModel can race a blocking read.
-                Log.w(TAG, "AudioRecord.read failed; stopping.", exception)
-                break
-            }
-            if (read <= 0) {
-                Log.w(TAG, "AudioRecord.read returned $read; stopping.")
-                break
-            }
-            // A stop-and-restart can leave this loop alive for one more read;
-            // never let a superseded recorder write into the next capture.
-            val stillCurrent = synchronized(lock) {
-                if (capture?.record !== record) {
-                    false
-                } else {
-                    pcm.write(chunk, 0, read)
-                    true
+        var endReason: CaptureEndReason? = null
+        try {
+            while (currentCoroutineContext().isActive) {
+                val read = try {
+                    record.read(chunk, 0, chunk.size)
+                } catch (exception: IllegalStateException) {
+                    // release() from a cleared ViewModel can race a blocking read.
+                    Log.w(TAG, "AudioRecord.read failed; stopping.", exception)
+                    endReason = CaptureEndReason.FAILED
+                    break
+                }
+                if (read <= 0) {
+                    Log.w(TAG, "AudioRecord.read returned $read; stopping.")
+                    endReason = CaptureEndReason.FAILED
+                    break
+                }
+                // A stop-and-restart can leave this loop alive for one more read;
+                // never let a superseded recorder write into the next capture.
+                val stillCurrent = synchronized(lock) {
+                    if (capture?.record !== record) {
+                        false
+                    } else {
+                        pcm.write(chunk, 0, read)
+                        true
+                    }
+                }
+                if (!stillCurrent) break
+                if (endpointer != null) {
+                    // onnxruntime throws OrtException, which is a checked
+                    // Exception, so this must not be a RuntimeException guard.
+                    val decision = try {
+                        endpointer.onChunk(chunk, read)
+                    } catch (exception: CancellationException) {
+                        throw exception
+                    } catch (exception: Exception) {
+                        // A classifier failure must not leave the mic held; end
+                        // capture and let the caller stop as usual.
+                        Log.e(TAG, "Speech endpointer failed; stopping.", exception)
+                        endReason = CaptureEndReason.FAILED
+                        break
+                    }
+                    when (decision) {
+                        SpeechEndpointer.Decision.STOP_SAVE -> {
+                            endReason = CaptureEndReason.SPEECH_ENDED
+                            break
+                        }
+                        SpeechEndpointer.Decision.STOP_DISCARD -> {
+                            endReason = CaptureEndReason.NO_SPEECH
+                            break
+                        }
+                        SpeechEndpointer.Decision.CONTINUE -> Unit
+                    }
+                }
+                if (SystemClock.elapsedRealtime() >= deadline) {
+                    Log.d(TAG, "Reached the ${MAX_DURATION_MILLIS / 1000}s recording cap.")
+                    endReason = CaptureEndReason.MAX_DURATION
+                    break
                 }
             }
-            if (!stillCurrent) break
-            if (SystemClock.elapsedRealtime() >= deadline) {
-                Log.d(TAG, "Reached the ${MAX_DURATION_MILLIS / 1000}s recording cap.")
-                break
-            }
+        } finally {
+            // The endpointer, cap or a read error ended capture, so release the
+            // mic without waiting for the UI to release the button. This runs on
+            // every exit path so no failure can leak the AudioRecord. The
+            // Capture is kept so a later stop() can still return what was
+            // recorded.
+            if (markRecordReleased(owned)) releaseRecord(owned)
         }
-        // The cap or a read error ended capture, so release the mic without
-        // waiting for the UI to release the button. The Capture is kept so a
-        // later stop() can still return what was recorded.
-        if (markRecordReleased(owned)) {
-            releaseRecord(record)
-        }
+        // Runs outside the lock and after the mic is released.
+        if (endReason != null) owned.onCaptureEnded?.invoke(endReason)
     }
 
     /**
@@ -206,7 +259,15 @@ class PhoneRecorder(
         true
     }
 
-    private fun releaseRecord(record: AudioRecord) {
+    private fun releaseRecord(capture: Capture) {
+        // Release the VAD model alongside the mic. A throwing close must not
+        // stop the AudioRecord from being stopped and released.
+        try {
+            capture.endpointer?.close()
+        } catch (exception: Exception) {
+            Log.w(TAG, "Could not close speech endpointer.", exception)
+        }
+        val record = capture.record
         try {
             record.stop()
         } catch (exception: IllegalStateException) {

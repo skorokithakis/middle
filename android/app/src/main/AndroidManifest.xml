@@ -64,6 +64,24 @@
             </intent-filter>
         </activity>
 
+        <!-- No noHistory here: Android does not deliver permission results
+             to a noHistory activity, and the first launch may need to ask
+             for RECORD_AUDIO. -->
+        <activity
+            android:name=".AssistActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.Middle.Assist">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".ble.SyncForegroundService"
             android:foregroundServiceType="connectedDevice"

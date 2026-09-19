@@ -14,7 +14,9 @@ class MiddleApplication : Application() {
     lateinit var repository: RecordingsRepository
     lateinit var pipelineQueue: PipelineQueue
 
-    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    // Shared by the pipeline and by callers (the assistant) that must keep
+    // working after their activity is finished.
+    val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
         super.onCreate()
