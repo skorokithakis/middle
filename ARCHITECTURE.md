@@ -24,7 +24,7 @@ middle/
 │       ├── data/         # Recordings, webhook client, retry queue, settings
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
 │       │   ├── RecordingsRepository.kt # StateFlow of recordings; encodes IMA→M4A on save
-│       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (API key, toggles, webhook, sync device type, ring address)
+│       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (API key, toggles, webhook, sync device type, ring address); JSON backup export/import
 │       │   ├── WebhookClient.kt        # OkHttp POST with Basic Auth from URL credentials
 │       │   ├── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
 │       │   └── WebhookRetryQueue.kt    # JSON-file-backed retry queue with exponential backoff
@@ -35,12 +35,12 @@ middle/
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/resend-webhook
-│       │   ├── SettingsScreen.kt       # API key, toggles, webhook, sync device and ring picker
+│       │   ├── SettingsScreen.kt       # API key, toggles, webhook, sync device and ring picker, settings backup export/import
 │       │   ├── LogScreen.kt            # Webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual webhook resend
-│       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker
+│       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
 │       └── MiddleApplication.kt        # App singleton: RecordingsRepository, WebhookRetryQueue, notification channels
 ├── platformio.ini        # PlatformIO build config
@@ -223,6 +223,15 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).
+
+The Settings screen can export the configuration to a JSON file and import one
+back. The file is one flat object tagged `version: 1`, keyed by the same
+preference names `Settings.kt` uses. An import parses and type-checks the whole
+file before showing a confirmation dialog and writing nothing until it is
+confirmed; keys absent from the file keep their current value and unknown keys
+are ignored. The import writes through the `Settings` property setters so a
+device type or ring address change restarts the sync service. The file holds the
+API keys and pairing token as plain text, so the user must keep it private.
 
 A new recording saved by either sync path posts a "New recording added" notification on its own channel, separate from the battery alerts channel. A fixed notification ID means several files saved in one sync collapse into a single notification, and tapping it opens the app on the Recordings screen.
 

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exclude the EncryptedSharedPreferences file: its Keystore master key is
+     not backed up, so a restored copy cannot be decrypted. -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="middle_settings.xml" />
+</full-backup-content>

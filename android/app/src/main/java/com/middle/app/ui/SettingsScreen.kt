@@ -1,5 +1,7 @@
 package com.middle.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
@@ -64,7 +67,27 @@ fun SettingsScreen(
     val webhookBodyTemplate by viewModel.webhookBodyTemplate.collectAsState()
     val isPaired by viewModel.isPaired.collectAsState()
     val pairingToken by viewModel.pairingToken.collectAsState()
+    val pendingImport by viewModel.pendingImport.collectAsState()
     var showUnpairDialog by remember { mutableStateOf(false) }
+
+    // CreateDocument and OpenDocument put the file where the user chooses, so
+    // the app needs no storage permission on any Android version.
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.exportSettings(uri)
+        }
+    }
+    // The mime filter is deliberately broad: providers report the type of a
+    // .json file inconsistently, so a narrow filter would grey out valid files.
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            viewModel.prepareImport(uri)
+        }
+    }
 
     // The bonded list is read when the picker is shown rather than when the view
     // model is created, because the activity asks for BLUETOOTH_CONNECT after
@@ -322,6 +345,32 @@ fun SettingsScreen(
                 }
             }
 
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(16.dp))
+            Text("Backup", style = MaterialTheme.typography.titleSmall)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { exportLauncher.launch("middle-settings.json") },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Export settings")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Import settings")
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "The exported file holds your API keys and pairing token as plain text. Keep it private.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+
             if (showUnpairDialog) {
                 AlertDialog(
                     onDismissRequest = { showUnpairDialog = false },
@@ -339,6 +388,24 @@ fun SettingsScreen(
                     },
                     dismissButton = {
                         TextButton(onClick = { showUnpairDialog = false }) {
+                            Text("Cancel")
+                        }
+                    },
+                )
+            }
+
+            if (pendingImport != null) {
+                AlertDialog(
+                    onDismissRequest = { viewModel.cancelImport() },
+                    title = { Text("Import settings?") },
+                    text = { Text("Settings in the file replace the ones in the app. Settings the file does not have stay as they are.") },
+                    confirmButton = {
+                        TextButton(onClick = { viewModel.applyImport() }) {
+                            Text("Import")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { viewModel.cancelImport() }) {
                             Text("Cancel")
                         }
                     },

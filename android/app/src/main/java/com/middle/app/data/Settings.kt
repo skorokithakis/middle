@@ -3,7 +3,40 @@ package com.middle.app.data
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import org.json.JSONException
+import org.json.JSONObject
+import org.json.JSONTokener
 import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * The settings that take part in a backup. A null field means the backup file
+ * did not have that key, so an import leaves the stored value alone. Runtime
+ * state that is rebuilt on the next sync is deliberately not part of a backup.
+ */
+data class SettingsBackup(
+    val openAiApiKey: String? = null,
+    val elevenLabsApiKey: String? = null,
+    val transcriptionProvider: String? = null,
+    val deviceType: String? = null,
+    val ringDeviceAddress: String? = null,
+    val backgroundSyncEnabled: Boolean? = null,
+    val transcriptionEnabled: Boolean? = null,
+    val webhookEnabled: Boolean? = null,
+    val webhookUrl: String? = null,
+    val webhookBodyTemplate: String? = null,
+    val pairedDeviceAddress: String? = null,
+    val pairingToken: String? = null,
+)
+
+enum class BackupParseError {
+    NOT_A_BACKUP,
+    NEWER_VERSION,
+}
+
+sealed interface BackupParseResult {
+    data class Valid(val backup: SettingsBackup) : BackupParseResult
+    data class Invalid(val error: BackupParseError) : BackupParseResult
+}
 
 class Settings(context: Context) {
 
@@ -151,6 +184,106 @@ class Settings(context: Context) {
             .apply()
     }
 
+    /**
+     * Serializes the configurable settings to the backup file format, keyed by
+     * the preference names so the file describes itself against this class.
+     */
+    fun exportBackupJson(): String = JSONObject().apply {
+        put(BACKUP_VERSION_KEY, BACKUP_VERSION)
+        put(KEY_OPENAI_API_KEY, openAiApiKey)
+        put(KEY_ELEVENLABS_API_KEY, elevenLabsApiKey)
+        put(KEY_TRANSCRIPTION_PROVIDER, transcriptionProvider)
+        put(KEY_DEVICE_TYPE, deviceType)
+        put(KEY_RING_DEVICE_ADDRESS, ringDeviceAddress)
+        put(KEY_BACKGROUND_SYNC, backgroundSyncEnabled)
+        put(KEY_TRANSCRIPTION, transcriptionEnabled)
+        put(KEY_WEBHOOK_ENABLED, webhookEnabled)
+        put(KEY_WEBHOOK_URL, webhookUrl)
+        put(KEY_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
+        put(KEY_PAIRED_DEVICE_ADDRESS, pairedDeviceAddress)
+        put(KEY_PAIRING_TOKEN, pairingToken)
+    }.toString()
+
+    /**
+     * Parses and type-checks a backup without writing anything. The whole file
+     * is validated before it is applied because a half-applied import would mix
+     * old and new settings in a way the user cannot see or undo.
+     */
+    fun parseBackupJson(text: String): BackupParseResult {
+        val tokener = JSONTokener(text)
+        val json = try {
+            JSONObject(tokener)
+        } catch (exception: JSONException) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
+        // JSONObject(text) stops at the first object and ignores trailing
+        // content, so the tokener must be exhausted for the file to be valid.
+        val trailing = try {
+            tokener.nextClean()
+        } catch (exception: JSONException) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
+        if (trailing != '\u0000') {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
+        val version = json.opt(BACKUP_VERSION_KEY)
+        if (version !is Int) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
+        if (version > BACKUP_VERSION) {
+            return BackupParseResult.Invalid(BackupParseError.NEWER_VERSION)
+        }
+        if (version < BACKUP_VERSION) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
+        for (key in BACKUP_STRING_KEYS) {
+            if (json.has(key) && json.opt(key) !is String) {
+                return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+            }
+        }
+        for (key in BACKUP_BOOLEAN_KEYS) {
+            if (json.has(key) && json.opt(key) !is Boolean) {
+                return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+            }
+        }
+        return BackupParseResult.Valid(
+            SettingsBackup(
+                openAiApiKey = json.stringOrNull(KEY_OPENAI_API_KEY),
+                elevenLabsApiKey = json.stringOrNull(KEY_ELEVENLABS_API_KEY),
+                transcriptionProvider = json.stringOrNull(KEY_TRANSCRIPTION_PROVIDER),
+                deviceType = json.stringOrNull(KEY_DEVICE_TYPE),
+                ringDeviceAddress = json.stringOrNull(KEY_RING_DEVICE_ADDRESS),
+                backgroundSyncEnabled = json.booleanOrNull(KEY_BACKGROUND_SYNC),
+                transcriptionEnabled = json.booleanOrNull(KEY_TRANSCRIPTION),
+                webhookEnabled = json.booleanOrNull(KEY_WEBHOOK_ENABLED),
+                webhookUrl = json.stringOrNull(KEY_WEBHOOK_URL),
+                webhookBodyTemplate = json.stringOrNull(KEY_WEBHOOK_BODY_TEMPLATE),
+                pairedDeviceAddress = json.stringOrNull(KEY_PAIRED_DEVICE_ADDRESS),
+                pairingToken = json.stringOrNull(KEY_PAIRING_TOKEN),
+            ),
+        )
+    }
+
+    /**
+     * Writes a parsed backup through the property setters instead of the raw
+     * preferences, so a device type or ring address change reaches the sync
+     * service and it restarts its session against the imported device.
+     */
+    fun applyBackup(backup: SettingsBackup) {
+        backup.openAiApiKey?.let { openAiApiKey = it }
+        backup.elevenLabsApiKey?.let { elevenLabsApiKey = it }
+        backup.transcriptionProvider?.let { transcriptionProvider = it }
+        backup.deviceType?.let { deviceType = it }
+        backup.ringDeviceAddress?.let { ringDeviceAddress = it }
+        backup.backgroundSyncEnabled?.let { backgroundSyncEnabled = it }
+        backup.transcriptionEnabled?.let { transcriptionEnabled = it }
+        backup.webhookEnabled?.let { webhookEnabled = it }
+        backup.webhookUrl?.let { webhookUrl = it }
+        backup.webhookBodyTemplate?.let { webhookBodyTemplate = it }
+        backup.pairedDeviceAddress?.let { pairedDeviceAddress = it }
+        backup.pairingToken?.let { pairingToken = it }
+    }
+
     companion object {
         const val TRANSCRIPTION_PROVIDER_OPENAI = "openai"
         const val TRANSCRIPTION_PROVIDER_ELEVENLABS = "elevenlabs"
@@ -179,5 +312,35 @@ class Settings(context: Context) {
         private const val KEY_RING_DEVICE_ADDRESS = "ring_device_address"
         private const val KEY_LAST_SUCCESSFUL_COLLECTION_INDEX = "last_successful_collection_index"
         const val DEFAULT_WEBHOOK_BODY_TEMPLATE = "{\"phrase\": \"\$transcript\"}"
+
+        // A backup is one flat object tagged with the format version. New
+        // settings are added to a later version's backup, so a file written by
+        // an older build never has to know about them.
+        private const val BACKUP_VERSION_KEY = "version"
+        private const val BACKUP_VERSION = 1
+
+        // Grouped by JSON type so a parse can reject a key that carries the
+        // wrong type before any setting is written.
+        private val BACKUP_STRING_KEYS = listOf(
+            KEY_OPENAI_API_KEY,
+            KEY_ELEVENLABS_API_KEY,
+            KEY_TRANSCRIPTION_PROVIDER,
+            KEY_DEVICE_TYPE,
+            KEY_RING_DEVICE_ADDRESS,
+            KEY_WEBHOOK_URL,
+            KEY_WEBHOOK_BODY_TEMPLATE,
+            KEY_PAIRED_DEVICE_ADDRESS,
+            KEY_PAIRING_TOKEN,
+        )
+        private val BACKUP_BOOLEAN_KEYS = listOf(
+            KEY_BACKGROUND_SYNC,
+            KEY_TRANSCRIPTION,
+            KEY_WEBHOOK_ENABLED,
+        )
     }
 }
+
+/** A key that is absent stays null, which an import reads as "leave as is". */
+private fun JSONObject.stringOrNull(key: String): String? = if (has(key)) getString(key) else null
+
+private fun JSONObject.booleanOrNull(key: String): Boolean? = if (has(key)) getBoolean(key) else null

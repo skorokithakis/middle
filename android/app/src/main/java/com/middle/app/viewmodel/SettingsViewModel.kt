@@ -4,12 +4,22 @@ import android.Manifest
 import android.app.Application
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import com.middle.app.data.BackupParseError
+import com.middle.app.data.BackupParseResult
 import com.middle.app.data.Settings
+import com.middle.app.data.SettingsBackup
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class BondedDevice(val name: String?, val address: String)
 
@@ -64,6 +74,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     private val _pairingToken = MutableStateFlow(settings.pairingToken)
     val pairingToken: StateFlow<String> = _pairingToken
+
+    // A validated backup waiting for the user to confirm the import. Null when
+    // there is no confirmation dialog to show.
+    private val _pendingImport = MutableStateFlow<SettingsBackup?>(null)
+    val pendingImport: StateFlow<SettingsBackup?> = _pendingImport
 
     fun setOpenAiApiKey(key: String) {
         settings.openAiApiKey = key
@@ -178,9 +193,106 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _pairingToken.value = ""
     }
 
+    /**
+     * Writes the current settings to [uri] as a JSON backup. The write runs off
+     * the main thread because a document provider can be a network service.
+     */
+    fun exportSettings(uri: Uri) {
+        val application = getApplication<Application>()
+        val backup = settings.exportBackupJson()
+        viewModelScope.launch(Dispatchers.IO) {
+            val written = try {
+                application.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(backup.toByteArray(Charsets.UTF_8))
+                } != null
+            } catch (exception: Exception) {
+                // A document provider can fail for reasons beyond IOException,
+                // such as a security exception, so the boundary reports any
+                // failure with the same message.
+                Log.w(TAG, "Could not write settings backup: $exception")
+                false
+            }
+            showToast(if (written) MESSAGE_EXPORTED else MESSAGE_WRITE_FAILED)
+        }
+    }
+
+    /**
+     * Reads and validates the backup at [uri] without changing any setting. A
+     * valid backup is parked in [pendingImport] until the user confirms it.
+     */
+    fun prepareImport(uri: Uri) {
+        val application = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = try {
+                application.contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use {
+                    it.readText()
+                }
+            } catch (exception: Exception) {
+                Log.w(TAG, "Could not read settings backup: $exception")
+                null
+            }
+            if (text == null) {
+                showToast(MESSAGE_READ_FAILED)
+                return@launch
+            }
+            when (val result = settings.parseBackupJson(text)) {
+                is BackupParseResult.Valid -> _pendingImport.value = result.backup
+                is BackupParseResult.Invalid -> showToast(
+                    when (result.error) {
+                        BackupParseError.NOT_A_BACKUP -> MESSAGE_NOT_A_BACKUP
+                        BackupParseError.NEWER_VERSION -> MESSAGE_NEWER_VERSION
+                    },
+                )
+            }
+        }
+    }
+
+    /** Applies the backup [prepareImport] parked, if the user confirmed it. */
+    fun applyImport() {
+        val backup = _pendingImport.value ?: return
+        _pendingImport.value = null
+        settings.applyBackup(backup)
+        refreshFromSettings()
+        viewModelScope.launch { showToast(MESSAGE_IMPORTED) }
+    }
+
+    fun cancelImport() {
+        _pendingImport.value = null
+    }
+
+    /** Reloads every flow from storage after an import rewrote the settings. */
+    private fun refreshFromSettings() {
+        _openAiApiKey.value = settings.openAiApiKey
+        _elevenLabsApiKey.value = settings.elevenLabsApiKey
+        _transcriptionProvider.value = settings.transcriptionProvider
+        _deviceType.value = settings.deviceType
+        _ringDeviceAddress.value = settings.ringDeviceAddress
+        _backgroundSyncEnabled.value = settings.backgroundSyncEnabled
+        _transcriptionEnabled.value = settings.transcriptionEnabled
+        _webhookEnabled.value = settings.webhookEnabled
+        _webhookUrl.value = settings.webhookUrl
+        _webhookBodyTemplate.value = settings.webhookBodyTemplate
+        _isPaired.value = settings.isPaired
+        _pairingToken.value = settings.pairingToken
+    }
+
+    private suspend fun showToast(message: String) {
+        withContext(Dispatchers.Main) {
+            Toast.makeText(getApplication(), message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     companion object {
         // Index 01 rings bond under a name of the form "Pebble Index XXX",
         // where the suffix identifies the individual ring.
         private const val RING_NAME_PREFIX = "Pebble Index"
+        private const val TAG = "SettingsViewModel"
+
+        private const val MESSAGE_EXPORTED = "Settings exported."
+        private const val MESSAGE_IMPORTED = "Settings imported."
+        private const val MESSAGE_WRITE_FAILED = "Could not write the file."
+        private const val MESSAGE_READ_FAILED = "Could not read that file."
+        private const val MESSAGE_NOT_A_BACKUP = "That file is not a Middle settings backup."
+        private const val MESSAGE_NEWER_VERSION = "That backup is from a newer version of the app."
     }
 }

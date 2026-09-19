@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exclude the EncryptedSharedPreferences file from both cloud backup and
+     device-to-device transfer: its Keystore master key does not travel with
+     the file, so a restored copy cannot be decrypted. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="middle_settings.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="middle_settings.xml" />
+    </device-transfer>
+</data-extraction-rules>
