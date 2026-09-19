@@ -20,6 +20,20 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        // This debug keystore is committed on purpose. The app is open source and
+        // distributed as a debug APK, and a stable signing key is what lets a newer
+        // build install over an older one. The tradeoff is that anyone can build an
+        // APK that Android treats as an update to this app; that was accepted
+        // deliberately. Do not reuse this key for a release build.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

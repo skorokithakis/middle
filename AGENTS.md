@@ -154,5 +154,7 @@
 ## android app
 
 - There's an Android companion app in android/, it saves and manages recordings.
+- Debug builds sign with the committed `android/app/debug.keystore`, so they are
+  reproducible across machines and no per-machine debug key is generated.
 - When working on the Android app, try to install it when done, with
  `./gradlew installDebug`.

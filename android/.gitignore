@@ -26,6 +26,10 @@ render.experimental.xml
 # Keystore files
 *.jks
 *.keystore
+# The debug keystore is committed on purpose so every machine signs debug
+# builds with the same key. Any other keystore (e.g. a release key) stays
+# ignored.
+!app/debug.keystore
 
 # Google Services (e.g. APIs or Firebase)
 google-services.json
