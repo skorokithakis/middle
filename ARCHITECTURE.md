@@ -230,11 +230,15 @@ Key details:
   nothing (no time, LLM failure), evaluation resumes after it with
   `ActionMatcher.planFrom()`. WEBHOOK hits are collected into the job's
   `webhookActionIds`, for delivery in that order.
-- ALARM/CALENDAR need an OpenAI key: `TimeParseClient` sends the whole transcript
-  plus the local date/time, weekday and zone, and asks the `gpt-5.6-luna` model
-  for a strict JSON object `{start, end, allDay, title}` with local
-  `YYYY-MM-DDTHH:MM` times. A missing key, an HTTP/parse failure, or a null start
-  posts an info notification and counts as no result.
+- ALARM/CALENDAR need an OpenAI key: `TimeParseClient` sends the whole transcript,
+  the local date/time, weekday and zone, and the command kind (`CommandKind.ALARM`
+  for an ALARM hit, `CommandKind.REMINDER` for a CALENDAR hit), and asks the
+  `gpt-5.6-luna` model for a strict JSON object `{start, end, allDay, title}` with
+  local `YYYY-MM-DDTHH:MM` times. An explicit am/pm or 24-hour time is taken
+  literally; a bare hour is read as a morning time for an alarm and as a time in
+  the 08:00–22:00 waking range for a reminder, with the nearest future reading
+  winning when both are plausible. A missing key, an HTTP/parse failure, or a null
+  start posts an info notification and counts as no result.
 - An ALARM starts the system clock app with `AlarmClock.ACTION_SET_ALARM`
   (hour/minute, `EXTRA_SKIP_UI`, the parsed title or app name). A time more than
   24 hours ahead is rejected (exactly 24 hours is allowed); an all-day command

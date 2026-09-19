@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import com.middle.app.MainActivity
 import com.middle.app.MiddleApplication
 import com.middle.app.R
+import com.middle.app.transcription.CommandKind
 import com.middle.app.transcription.ParsedCommand
 import com.middle.app.transcription.TimeParseClient
 import com.middle.app.transcription.TimeParseResult
@@ -59,7 +60,11 @@ class ActionRunner(context: Context) {
                     return false
                 }
                 val now = ZonedDateTime.now()
-                val command = parseCommand(transcript, now) ?: return false
+                val kind = when (hit.action.type) {
+                    ActionType.ALARM -> CommandKind.ALARM
+                    else -> CommandKind.REMINDER
+                }
+                val command = parseCommand(transcript, now, kind) ?: return false
                 when (hit.action.type) {
                     ActionType.ALARM -> runAlarm(command, now)
                     else -> runCalendar(command)
@@ -73,14 +78,18 @@ class ActionRunner(context: Context) {
      * Runs the shared time-parse step. Returns null, after posting the matching
      * info notification, when the key is missing or no time could be read.
      */
-    private fun parseCommand(transcript: String, now: ZonedDateTime): ParsedCommand? {
+    private fun parseCommand(
+        transcript: String,
+        now: ZonedDateTime,
+        kind: CommandKind,
+    ): ParsedCommand? {
         val apiKey = settings.openAiApiKey
         if (apiKey.isBlank()) {
             Log.w(TAG, "[action] time-based action matched but no OpenAI key is set")
             postInfoNotification(appContext.getString(R.string.actions_missing_api_key_notification_text))
             return null
         }
-        return when (val result = TimeParseClient(apiKey).parse(transcript, now)) {
+        return when (val result = TimeParseClient(apiKey).parse(transcript, now, kind)) {
             is TimeParseResult.Success -> {
                 if (result.command.start == null) {
                     Log.d(TAG, "[action] time parse found no start time")

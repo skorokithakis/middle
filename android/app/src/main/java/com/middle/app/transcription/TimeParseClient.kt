@@ -23,6 +23,9 @@ data class ParsedCommand(
     val title: String?,
 )
 
+/** What the spoken command will become, which disambiguates a bare hour. */
+enum class CommandKind { ALARM, REMINDER }
+
 sealed class TimeParseResult {
     data class Success(val command: ParsedCommand) : TimeParseResult()
     data class Failure(val message: String) : TimeParseResult()
@@ -55,11 +58,11 @@ class TimeParseClient(private val apiKey: String) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    fun parse(text: String, now: ZonedDateTime): TimeParseResult {
+    fun parse(text: String, now: ZonedDateTime, kind: CommandKind): TimeParseResult {
         val request = Request.Builder()
             .url(CHAT_COMPLETIONS_URL)
             .header("Authorization", "Bearer $apiKey")
-            .post(buildRequestBody(text, now))
+            .post(buildRequestBody(text, now, kind))
             .build()
 
         return try {
@@ -80,9 +83,13 @@ class TimeParseClient(private val apiKey: String) {
         }
     }
 
-    private fun buildRequestBody(text: String, now: ZonedDateTime): RequestBody {
+    private fun buildRequestBody(
+        text: String,
+        now: ZonedDateTime,
+        kind: CommandKind,
+    ): RequestBody {
         val messages = JSONArray()
-            .put(JSONObject().put("role", "system").put("content", buildSystemPrompt(now)))
+            .put(JSONObject().put("role", "system").put("content", buildSystemPrompt(now, kind)))
             .put(JSONObject().put("role", "user").put("content", text))
 
         val responseFormat = JSONObject()
@@ -137,17 +144,24 @@ private fun nullableString(description: String): JSONObject = JSONObject()
     .put("type", JSONArray(listOf("string", "null")))
     .put("description", description)
 
-private fun buildSystemPrompt(now: ZonedDateTime): String {
+private fun buildSystemPrompt(now: ZonedDateTime, kind: CommandKind): String {
     val dateTime = now.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
     val weekday = now.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.ENGLISH)
+    val kindSentence = when (kind) {
+        CommandKind.ALARM -> "This is a wake-up alarm command."
+        CommandKind.REMINDER -> "This is a reminder or appointment command."
+    }
     return "You extract alarm and reminder times from a spoken command. " +
-        "The current local date and time is $dateTime, the weekday is $weekday, " +
-        "and the timezone is ${now.zone.id}. The user is issuing a spoken alarm or " +
-        "reminder command. Return the referenced start time, and an end time if one is " +
-        "given. The start and end are local date-times formatted as YYYY-MM-DDTHH:MM. " +
-        "If the referenced time already passed today and no date was given, use the next " +
-        "occurrence. An ambiguous bare hour means the next occurrence of that hour. If no " +
-        "date or time is present, return start=null. Set allDay=true when a date but no " +
-        "time of day is given. title is a short label for what the alarm or event is " +
-        "about, or null."
+        "$kindSentence The current local date and time is $dateTime, the weekday is " +
+        "$weekday, and the timezone is ${now.zone.id}. Return the referenced start time, " +
+        "and an end time if one is given. The start and end are local date-times formatted " +
+        "as YYYY-MM-DDTHH:MM. If the referenced time already passed today and no date was " +
+        "given, use the next day. An explicit am/pm or 24-hour time is taken literally. " +
+        "For an hour with no am/pm: a wake-up alarm usually means a morning time, so prefer " +
+        "the morning reading (e.g. '7' means 07:00). A reminder or appointment usually " +
+        "happens during waking hours, roughly 08:00 to 22:00, so prefer the reading in that " +
+        "range (e.g. 'at 5' means 17:00, 'at 9' means 09:00). If both readings are plausible, " +
+        "pick the nearest one in the future. If no date or time is present, return " +
+        "start=null. Set allDay=true when a date but no time of day is given. title is a " +
+        "short label for what the alarm or event is about, or null."
 }
