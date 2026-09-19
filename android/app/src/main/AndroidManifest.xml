@@ -30,6 +30,9 @@
     <!-- Restart the sync foreground service after a reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- Record a voice note from the phone microphone -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Network for OpenAI transcription -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Pipeline queue watches connectivity to gate retries -->

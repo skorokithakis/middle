@@ -29,11 +29,13 @@ middle/
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
 │       │   ├── RecordingsRepository.kt # StateFlow of recordings; encodes IMA→M4A on save
+│       │   ├── RecordingSaver.kt       # Saves phone PCM16 as M4A then queues transcription/webhook
 │       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (keys, toggles, calendar, actions, device); migrates the legacy webhook; version 2 JSON backup
 │       │   ├── WebhookClient.kt        # OkHttp POST, Basic Auth from URL credentials, $transcript/$rest body substitution
 │       │   └── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
-│       ├── audio/        # IMA ADPCM decoder, audio encoder
+│       ├── audio/        # IMA ADPCM decoder, audio encoder, phone microphone capture
 │       │   ├── ImaAdpcmDecoder.kt      # Pure-Kotlin ADPCM decoder (mirrors firmware exactly)
+│       │   ├── PhoneRecorder.kt        # AudioRecord mic capture → PCM16, 5-minute cap
 │       │   └── AudioEncoder.kt         # MediaCodec AAC encoder → M4A via MediaMuxer
 │       ├── transcription/
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
@@ -329,7 +331,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 
 | Screen | Route | Description |
 |---|---|---|
-| Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. |
+| Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
 | Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields. Top bar adds an alarm, reminder or webhook action. A calendar row picks the calendar for reminders, and an overlay-permission card is shown when the permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import. |

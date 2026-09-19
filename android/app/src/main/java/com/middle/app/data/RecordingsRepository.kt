@@ -43,6 +43,12 @@ class RecordingsRepository(context: Context) {
     }
 
     /**
+     * True when [filename] is already taken in the recordings directory. Used
+     * to pick a non-colliding name before encoding a new recording.
+     */
+    fun recordingExists(filename: String): Boolean = File(recordingsDirectory, filename).exists()
+
+    /**
      * Encode already-decoded signed 16-bit little-endian PCM into M4A and save
      * it. The Index ring hands us PCM16 directly, unlike the pendant path
      * ([saveEncodedRecording]), which has to decode IMA ADPCM first.
