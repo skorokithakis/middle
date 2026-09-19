@@ -6,6 +6,7 @@ import androidx.security.crypto.MasterKeys
 import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -21,6 +22,10 @@ data class SettingsBackup(
     val ringDeviceAddress: String? = null,
     val backgroundSyncEnabled: Boolean? = null,
     val transcriptionEnabled: Boolean? = null,
+    val calendarId: Long? = null,
+    // Legacy global webhook keys. Kept so a version 1 backup still imports,
+    // where they are then migrated into a WEBHOOK action. A version 2 backup
+    // carries the webhook in [actions] instead and does not write these.
     val webhookEnabled: Boolean? = null,
     val webhookUrl: String? = null,
     val webhookBodyTemplate: String? = null,
@@ -113,23 +118,68 @@ class Settings(context: Context) {
         get() = prefs.getBoolean(KEY_TRANSCRIPTION, true)
         set(value) = prefs.edit().putBoolean(KEY_TRANSCRIPTION, value).apply()
 
-    var webhookEnabled: Boolean
-        get() = prefs.getBoolean(KEY_WEBHOOK_ENABLED, false)
-        set(value) = prefs.edit().putBoolean(KEY_WEBHOOK_ENABLED, value).apply()
-
-    var webhookUrl: String
-        get() = prefs.getString(KEY_WEBHOOK_URL, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_WEBHOOK_URL, value).apply()
-
-    var webhookBodyTemplate: String
-        get() = prefs.getString(KEY_WEBHOOK_BODY_TEMPLATE, DEFAULT_WEBHOOK_BODY_TEMPLATE) ?: DEFAULT_WEBHOOK_BODY_TEMPLATE
-        set(value) = prefs.edit().putString(KEY_WEBHOOK_BODY_TEMPLATE, value).apply()
+    // Null means no calendar has been picked yet.
+    var calendarId: Long?
+        get() = if (prefs.contains(KEY_CALENDAR_ID)) prefs.getLong(KEY_CALENDAR_ID, 0L) else null
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_CALENDAR_ID) else putLong(KEY_CALENDAR_ID, value)
+            }.apply()
+        }
 
     // Stored as one JSON array string so the list stays a single preference key.
     // An absent key reads as no actions.
     var actions: List<Action>
         get() = prefs.getString(KEY_ACTIONS, null)?.let { Action.parseJsonOrNull(it) } ?: emptyList()
         set(value) = prefs.edit().putString(KEY_ACTIONS, Action.toJson(value)).apply()
+
+    /**
+     * Moves the legacy global webhook into the action list as a catch-all
+     * WEBHOOK action, then clears the legacy fields so it cannot repeat.
+     *
+     * Runs once per install from [android.app.Application.onCreate]. It is also
+     * called at the end of [applyBackup], which resets the guard, so a version 1
+     * backup's webhook is migrated too.
+     */
+    fun migrateGlobalWebhookToAction() {
+        if (prefs.getBoolean(KEY_WEBHOOK_MIGRATED, false)) return
+        // The legacy keys are no longer exposed as properties, so the migration
+        // reads them raw. [applyBackup] writes a version 1 backup's keys here
+        // first for exactly this read.
+        val url = (prefs.getString(KEY_WEBHOOK_URL, "") ?: "").trim()
+        val enabled = prefs.getBoolean(KEY_WEBHOOK_ENABLED, false)
+        // A configured webhook migrates even when it was disabled, so switching
+        // the old toggle off does not silently drop the URL on upgrade. A
+        // catch-all action with the same URL means a version 1 backup was
+        // imported before; do not append a second one.
+        val alreadyMigrated = actions.any {
+            it.type == ActionType.WEBHOOK &&
+                it.pattern == Action.DEFAULT_WEBHOOK_PATTERN &&
+                it.webhookUrl == url
+        }
+        if (url.isNotEmpty() && !alreadyMigrated) {
+            val template =
+                prefs.getString(KEY_WEBHOOK_BODY_TEMPLATE, DEFAULT_WEBHOOK_BODY_TEMPLATE)
+                    ?: DEFAULT_WEBHOOK_BODY_TEMPLATE
+            val migrated = Action(
+                id = UUID.randomUUID().toString(),
+                enabled = enabled,
+                type = ActionType.WEBHOOK,
+                pattern = Action.DEFAULT_WEBHOOK_PATTERN,
+                stop = false,
+                webhookUrl = url,
+                webhookBodyTemplate = template,
+            )
+            // Appending preserves the position of the existing rules.
+            actions = actions + migrated
+        }
+        prefs.edit()
+            .putBoolean(KEY_WEBHOOK_ENABLED, false)
+            .putString(KEY_WEBHOOK_URL, "")
+            .putString(KEY_WEBHOOK_BODY_TEMPLATE, DEFAULT_WEBHOOK_BODY_TEMPLATE)
+            .putBoolean(KEY_WEBHOOK_MIGRATED, true)
+            .apply()
+    }
 
     var lastBatteryVoltage: String
         get() = prefs.getString(KEY_LAST_BATTERY_VOLTAGE, "N/A") ?: "N/A"
@@ -214,9 +264,8 @@ class Settings(context: Context) {
         put(KEY_RING_DEVICE_ADDRESS, ringDeviceAddress)
         put(KEY_BACKGROUND_SYNC, backgroundSyncEnabled)
         put(KEY_TRANSCRIPTION, transcriptionEnabled)
-        put(KEY_WEBHOOK_ENABLED, webhookEnabled)
-        put(KEY_WEBHOOK_URL, webhookUrl)
-        put(KEY_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
+        // A null calendar is written as an absent key rather than JSON null.
+        calendarId?.let { put(KEY_CALENDAR_ID, it) }
         put(KEY_ACTIONS, Action.toJson(actions))
         put(KEY_PAIRED_DEVICE_ADDRESS, pairedDeviceAddress)
         put(KEY_PAIRING_TOKEN, pairingToken)
@@ -251,9 +300,8 @@ class Settings(context: Context) {
         if (version > BACKUP_VERSION) {
             return BackupParseResult.Invalid(BackupParseError.NEWER_VERSION)
         }
-        if (version < BACKUP_VERSION) {
-            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
-        }
+        // Older versions stay importable; a version 1 file's global webhook is
+        // migrated into an action when it is applied.
         for (key in BACKUP_STRING_KEYS) {
             if (json.has(key) && json.opt(key) !is String) {
                 return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
@@ -263,6 +311,10 @@ class Settings(context: Context) {
             if (json.has(key) && json.opt(key) !is Boolean) {
                 return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
             }
+        }
+        // JSON numbers arrive as Int or Long, so both are accepted.
+        if (json.has(KEY_CALENDAR_ID) && json.opt(KEY_CALENDAR_ID) !is Number) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
         }
         // A present actions value must be a JSON array: a plain string would
         // otherwise parse as an empty list and wipe the stored actions.
@@ -279,6 +331,7 @@ class Settings(context: Context) {
                 ringDeviceAddress = json.stringOrNull(KEY_RING_DEVICE_ADDRESS),
                 backgroundSyncEnabled = json.booleanOrNull(KEY_BACKGROUND_SYNC),
                 transcriptionEnabled = json.booleanOrNull(KEY_TRANSCRIPTION),
+                calendarId = json.longOrNull(KEY_CALENDAR_ID),
                 webhookEnabled = json.booleanOrNull(KEY_WEBHOOK_ENABLED),
                 webhookUrl = json.stringOrNull(KEY_WEBHOOK_URL),
                 webhookBodyTemplate = json.stringOrNull(KEY_WEBHOOK_BODY_TEMPLATE),
@@ -302,12 +355,21 @@ class Settings(context: Context) {
         backup.ringDeviceAddress?.let { ringDeviceAddress = it }
         backup.backgroundSyncEnabled?.let { backgroundSyncEnabled = it }
         backup.transcriptionEnabled?.let { transcriptionEnabled = it }
-        backup.webhookEnabled?.let { webhookEnabled = it }
-        backup.webhookUrl?.let { webhookUrl = it }
-        backup.webhookBodyTemplate?.let { webhookBodyTemplate = it }
+        backup.calendarId?.let { calendarId = it }
         backup.actions?.let { actions = it }
         backup.pairedDeviceAddress?.let { pairedDeviceAddress = it }
         backup.pairingToken?.let { pairingToken = it }
+        // A version 1 backup carries its global webhook in the legacy keys.
+        // They are written raw, then the guard is cleared so the migration below
+        // turns them into a WEBHOOK action; a version 2 backup has no legacy
+        // keys and clearing the guard is a harmless no-op.
+        prefs.edit().apply {
+            backup.webhookEnabled?.let { putBoolean(KEY_WEBHOOK_ENABLED, it) }
+            backup.webhookUrl?.let { putString(KEY_WEBHOOK_URL, it) }
+            backup.webhookBodyTemplate?.let { putString(KEY_WEBHOOK_BODY_TEMPLATE, it) }
+            remove(KEY_WEBHOOK_MIGRATED)
+        }.apply()
+        migrateGlobalWebhookToAction()
     }
 
     companion object {
@@ -328,9 +390,11 @@ class Settings(context: Context) {
         private const val KEY_DEVICE_TYPE = "device_type"
         private const val KEY_BACKGROUND_SYNC = "background_sync"
         private const val KEY_TRANSCRIPTION = "transcription"
+        private const val KEY_CALENDAR_ID = "calendar_id"
         private const val KEY_WEBHOOK_ENABLED = "webhook_enabled"
         private const val KEY_WEBHOOK_URL = "webhook_url"
         private const val KEY_WEBHOOK_BODY_TEMPLATE = "webhook_body_template"
+        private const val KEY_WEBHOOK_MIGRATED = "webhook_migrated"
         private const val KEY_ACTIONS = "actions"
         private const val KEY_LAST_BATTERY_VOLTAGE = "last_battery_voltage"
         private const val KEY_LAST_BATTERY_NOTIFICATION_TIME = "last_battery_notification_time"
@@ -345,7 +409,7 @@ class Settings(context: Context) {
         // settings are added to a later version's backup, so a file written by
         // an older build never has to know about them.
         private const val BACKUP_VERSION_KEY = "version"
-        private const val BACKUP_VERSION = 1
+        private const val BACKUP_VERSION = 2
 
         // Grouped by JSON type so a parse can reject a key that carries the
         // wrong type before any setting is written.
@@ -373,3 +437,9 @@ class Settings(context: Context) {
 private fun JSONObject.stringOrNull(key: String): String? = if (has(key)) getString(key) else null
 
 private fun JSONObject.booleanOrNull(key: String): Boolean? = if (has(key)) getBoolean(key) else null
+
+/** JSON numbers arrive as Int or Long depending on magnitude, so both convert. */
+private fun JSONObject.longOrNull(key: String): Long? = when (val value = opt(key)) {
+    is Number -> value.toLong()
+    else -> null
+}

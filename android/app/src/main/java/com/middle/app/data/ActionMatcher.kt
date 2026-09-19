@@ -1,48 +1,66 @@
 package com.middle.app.data
 
-/** An hour/minute parsed out of a transcript after an action pattern matched. */
-data class AlarmTime(val hour: Int, val minute: Int)
-
-/** Outcome of matching one enabled action against a transcript. */
-sealed class ActionMatch {
-    data class Alarm(val action: Action, val time: AlarmTime) : ActionMatch()
-
-    data class NoTime(val action: Action) : ActionMatch()
-}
-
 /**
- * Result of running every action against a transcript, in input order.
- * [invalid] holds enabled actions whose pattern could not be compiled so the
- * caller can log them; they never match.
+ * One enabled action matched against a transcript.
+ *
+ * [rest] is the transcript after the matched pattern, trimmed. A pattern that
+ * consumes the whole transcript (notably the `.*` catch-all) has no text after
+ * it, so there [rest] is the empty string.
+ *
+ * [index] is the hit's position in the `actions` list it was planned from. A
+ * caller that needs to resume after a hit must use this rather than look the id
+ * up, because ids are not guaranteed unique (imported backups can duplicate
+ * them).
  */
-data class ActionResult(
-    val fired: List<ActionMatch.Alarm>,
-    val noTime: List<ActionMatch.NoTime>,
-    val suppressWebhook: Boolean,
-    val invalid: List<Action>,
-)
+data class ActionHit(val action: Action, val rest: String, val index: Int)
 
 /**
- * Decides which actions fire on a transcript. Deliberately free of Android
- * imports so the rules can be unit tested directly. Alarms are only resolved to
- * an hour/minute; rolling a past time to tomorrow is left to the clock app.
+ * Outcome of planning a transcript through an ordered action list.
+ *
+ * [hits] holds the matched actions in list order, up to and including the first
+ * hit whose action has `stop = true`. [invalid] holds enabled actions whose
+ * pattern could not be compiled so the caller can log them; they never match.
+ */
+data class MatchPlan(val hits: List<ActionHit>, val invalid: List<Action>)
+
+/**
+ * Decides which actions match a transcript. Deliberately free of Android
+ * imports so the rules can be unit tested directly. No time is parsed here:
+ * interpreting an ALARM/CALENDAR hit is the runner's job.
+ *
+ * `stop` is applied optimistically: planning stops at the first hit flagged
+ * `stop`. A runner may later find an ALARM/CALENDAR hit produced nothing (no
+ * time, LLM failure) and must then continue with the actions after that hit.
+ * To do that it resumes with [planFrom], passing [ActionHit.index] plus one.
+ * [plan] is just `planFrom(transcript, actions, 0)`.
  */
 object ActionMatcher {
 
-    // IGNORE_CASE so '7 AM', '7am' and '7 a.m.' all parse. The digit and colon
-    // boundaries stop a longer number ("123") or a malformed colon time
-    // ("7:3", "7:300") from being read as a time.
-    private val TIME_REGEX = Regex(
-        """(?<![\d:])(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)?(?!(?:\d|:))""",
-        RegexOption.IGNORE_CASE,
-    )
+    fun plan(transcript: String, actions: List<Action>): MatchPlan =
+        planFrom(transcript, actions, 0)
 
-    fun evaluate(transcript: String, actions: List<Action>): ActionResult {
-        val fired = mutableListOf<ActionMatch.Alarm>()
-        val noTime = mutableListOf<ActionMatch.NoTime>()
+    /**
+     * The trimmed text after [pattern]'s first match in [transcript], or null
+     * when the pattern is invalid or does not match. A single-action re-match
+     * for callers that already decided the action ran, so `stop` semantics are
+     * not reapplied.
+     */
+    fun restFor(pattern: String, transcript: String): String? {
+        val regex = try {
+            Regex(pattern, RegexOption.IGNORE_CASE)
+        } catch (exception: IllegalArgumentException) {
+            return null
+        }
+        val match = regex.find(transcript) ?: return null
+        return restAfter(transcript, match)
+    }
+
+    fun planFrom(transcript: String, actions: List<Action>, startIndex: Int): MatchPlan {
+        val hits = mutableListOf<ActionHit>()
         val invalid = mutableListOf<Action>()
 
-        for (action in actions) {
+        for (index in startIndex until actions.size) {
+            val action = actions[index]
             if (!action.enabled) continue
 
             val pattern = try {
@@ -53,39 +71,14 @@ object ActionMatcher {
                 continue
             }
 
-            // The time is everything after the pattern match, so a number that
-            // appears before the trigger phrase is not treated as the alarm.
             val match = pattern.find(transcript) ?: continue
-            val time = parseTime(transcript.substring(match.range.last + 1))
-            if (time == null) {
-                noTime.add(ActionMatch.NoTime(action))
-            } else {
-                fired.add(ActionMatch.Alarm(action, time))
-            }
+            hits.add(ActionHit(action, restAfter(transcript, match), index))
+            if (action.stop) break
         }
 
-        return ActionResult(
-            fired = fired,
-            noTime = noTime,
-            // Only a fired alarm can suppress the webhook; a no-time match
-            // must still let the transcript through.
-            suppressWebhook = fired.any { it.action.suppressWebhook },
-            invalid = invalid,
-        )
+        return MatchPlan(hits = hits, invalid = invalid)
     }
 
-    private fun parseTime(text: String): AlarmTime? {
-        val match = TIME_REGEX.find(text) ?: return null
-        val hour = match.groupValues[1].toIntOrNull() ?: return null
-        val minute = match.groupValues[2].toIntOrNull() ?: 0
-        val meridiem = match.groupValues[3].lowercase().replace(".", "")
-        if (minute !in 0..59) return null
-        return when (meridiem) {
-            // Bare hour is 24-hour: '7' -> 07:00, '19' -> 19:00.
-            "" -> hour.takeIf { it in 0..23 }?.let { AlarmTime(it, minute) }
-            "am" -> hour.takeIf { it in 1..12 }?.let { AlarmTime(it % 12, minute) }
-            "pm" -> hour.takeIf { it in 1..12 }?.let { AlarmTime((it % 12) + 12, minute) }
-            else -> null
-        }
-    }
+    private fun restAfter(transcript: String, match: MatchResult): String =
+        transcript.substring(match.range.last + 1).trim()
 }

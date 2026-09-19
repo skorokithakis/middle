@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.middle.app.MiddleApplication
+import com.middle.app.data.ActionType
 import com.middle.app.data.Recording
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
@@ -57,7 +58,9 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     val webhookEnabled: Boolean
-        get() = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
+        get() = settings.actions.any {
+            it.enabled && it.type == ActionType.WEBHOOK && it.webhookUrl.trim().isNotEmpty()
+        }
 
     val pendingFilenames: StateFlow<Set<String>>
         get() = pipelineQueue.pendingFilenames

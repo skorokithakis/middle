@@ -1,22 +1,37 @@
 package com.middle.app.ui
 
+import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -26,6 +41,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -34,12 +50,14 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -47,6 +65,8 @@ import com.middle.app.R
 import com.middle.app.data.Action
 import com.middle.app.data.ActionType
 import com.middle.app.viewmodel.ActionsViewModel
+import com.middle.app.viewmodel.CalendarInfo
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,8 +75,11 @@ fun ActionsScreen(
     onOpenDrawer: () -> Unit,
 ) {
     val actions by viewModel.actions.collectAsState()
+    val selectedCalendarName by viewModel.selectedCalendarName.collectAsState()
+    val calendars by viewModel.calendars.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
 
     // A settings import can replace the stored actions while this screen is
     // not composed, so reload on first composition and on every resume.
@@ -66,15 +89,34 @@ fun ActionsScreen(
     // screen first composes goes stale while the user is away. Re-reading on
     // resume makes the warning disappear as soon as they come back.
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
+    var canUseCalendar by remember { mutableStateOf(hasCalendarPermissions(context)) }
+    var showCalendarPicker by remember { mutableStateOf(false) }
+    var showAddMenu by remember { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 canDrawOverlays = Settings.canDrawOverlays(context)
+                canUseCalendar = hasCalendarPermissions(context)
                 viewModel.refresh()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // The list is loaded before the picker opens so an empty dialog is only
+    // shown when there really is nothing to choose.
+    val calendarPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        canUseCalendar = results[Manifest.permission.READ_CALENDAR] == true &&
+            results[Manifest.permission.WRITE_CALENDAR] == true
+        if (canUseCalendar) {
+            scope.launch {
+                viewModel.loadCalendars()
+                showCalendarPicker = true
+            }
+        }
     }
 
     Scaffold(
@@ -90,11 +132,27 @@ fun ActionsScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.addAction() }) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = stringResource(R.string.actions_add),
-                        )
+                    Box {
+                        IconButton(onClick = { showAddMenu = true }) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = stringResource(R.string.actions_add),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showAddMenu,
+                            onDismissRequest = { showAddMenu = false },
+                        ) {
+                            ActionType.entries.forEach { type ->
+                                DropdownMenuItem(
+                                    text = { Text(actionTypeLabel(type)) },
+                                    onClick = {
+                                        viewModel.addAction(type)
+                                        showAddMenu = false
+                                    },
+                                )
+                            }
+                        }
                     }
                 },
             )
@@ -117,18 +175,66 @@ fun ActionsScreen(
                     },
                 )
             }
+            CalendarRow(
+                selectedName = selectedCalendarName,
+                onClick = {
+                    if (canUseCalendar) {
+                        scope.launch {
+                            viewModel.loadCalendars()
+                            showCalendarPicker = true
+                        }
+                    } else {
+                        calendarPermissionLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.READ_CALENDAR,
+                                Manifest.permission.WRITE_CALENDAR,
+                            ),
+                        )
+                    }
+                },
+            )
             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(actions, key = { it.id }) { action ->
+                itemsIndexed(actions, key = { _, action -> action.id }) { index, action ->
                     ActionCard(
                         action = action,
+                        canMoveUp = index > 0,
+                        canMoveDown = index < actions.lastIndex,
                         onUpdate = { viewModel.updateAction(it) },
                         onDelete = { viewModel.deleteAction(action.id) },
+                        onMoveUp = { viewModel.moveUp(action.id) },
+                        onMoveDown = { viewModel.moveDown(action.id) },
                     )
                 }
             }
         }
     }
+
+    if (showCalendarPicker) {
+        CalendarPickerDialog(
+            calendars = calendars,
+            onSelect = { calendar ->
+                viewModel.setCalendarId(calendar.id)
+                showCalendarPicker = false
+            },
+            onDismiss = { showCalendarPicker = false },
+        )
+    }
 }
+
+private fun hasCalendarPermissions(context: Context): Boolean =
+    ContextCompat.checkSelfPermission(context, Manifest.permission.READ_CALENDAR) ==
+        PackageManager.PERMISSION_GRANTED &&
+        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
+        PackageManager.PERMISSION_GRANTED
+
+@Composable
+private fun actionTypeLabel(type: ActionType): String = stringResource(
+    when (type) {
+        ActionType.ALARM -> R.string.actions_type_alarm
+        ActionType.CALENDAR -> R.string.actions_type_calendar
+        ActionType.WEBHOOK -> R.string.actions_type_webhook
+    },
+)
 
 @Composable
 private fun OverlayPermissionCard(onGrant: () -> Unit) {
@@ -151,10 +257,89 @@ private fun OverlayPermissionCard(onGrant: () -> Unit) {
 }
 
 @Composable
+private fun CalendarRow(selectedName: String?, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.actions_calendar_label),
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = selectedName ?: stringResource(R.string.actions_calendar_none),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CalendarPickerDialog(
+    calendars: List<CalendarInfo>,
+    onSelect: (CalendarInfo) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.actions_calendar_dialog_title)) },
+        text = {
+            if (calendars.isEmpty()) {
+                Text(stringResource(R.string.actions_calendar_empty))
+            } else {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    calendars.forEach { calendar ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelect(calendar) }
+                                .padding(vertical = 8.dp),
+                        ) {
+                            Text(
+                                text = calendar.displayName,
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                            Text(
+                                text = calendar.accountName,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.actions_calendar_cancel))
+            }
+        },
+    )
+}
+
+@Composable
 private fun ActionCard(
     action: Action,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
     onUpdate: (Action) -> Unit,
     onDelete: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -166,13 +351,8 @@ private fun ActionCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Only one type exists, so the type is shown as a plain label
-                // rather than a picker.
-                val typeLabel = when (action.type) {
-                    ActionType.ALARM -> stringResource(R.string.actions_type_alarm)
-                }
                 Text(
-                    text = typeLabel,
+                    text = actionTypeLabel(action.type),
                     style = MaterialTheme.typography.titleSmall,
                     modifier = Modifier.weight(1f),
                 )
@@ -180,6 +360,18 @@ private fun ActionCard(
                     checked = action.enabled,
                     onCheckedChange = { onUpdate(action.copy(enabled = it)) },
                 )
+                IconButton(onClick = onMoveUp, enabled = canMoveUp) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowUp,
+                        contentDescription = stringResource(R.string.actions_move_up),
+                    )
+                }
+                IconButton(onClick = onMoveDown, enabled = canMoveDown) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = stringResource(R.string.actions_move_down),
+                    )
+                }
                 IconButton(onClick = onDelete) {
                     Icon(
                         imageVector = Icons.Default.Delete,
@@ -200,13 +392,31 @@ private fun ActionCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = stringResource(R.string.actions_suppress_webhook),
+                    text = stringResource(R.string.actions_stop),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )
                 Switch(
-                    checked = action.suppressWebhook,
-                    onCheckedChange = { onUpdate(action.copy(suppressWebhook = it)) },
+                    checked = action.stop,
+                    onCheckedChange = { onUpdate(action.copy(stop = it)) },
+                )
+            }
+            if (action.type == ActionType.WEBHOOK) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = action.webhookUrl,
+                    onValueChange = { onUpdate(action.copy(webhookUrl = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.actions_webhook_url_label)) },
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = action.webhookBodyTemplate,
+                    onValueChange = { onUpdate(action.copy(webhookBodyTemplate = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.actions_webhook_body_label)) },
+                    supportingText = { Text(stringResource(R.string.actions_webhook_body_helper)) },
                 )
             }
         }

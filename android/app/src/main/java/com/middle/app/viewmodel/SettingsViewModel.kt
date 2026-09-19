@@ -60,15 +60,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _transcriptionEnabled = MutableStateFlow(settings.transcriptionEnabled)
     val transcriptionEnabled: StateFlow<Boolean> = _transcriptionEnabled
 
-    private val _webhookEnabled = MutableStateFlow(settings.webhookEnabled)
-    val webhookEnabled: StateFlow<Boolean> = _webhookEnabled
-
-    private val _webhookUrl = MutableStateFlow(settings.webhookUrl)
-    val webhookUrl: StateFlow<String> = _webhookUrl
-
-    private val _webhookBodyTemplate = MutableStateFlow(settings.webhookBodyTemplate)
-    val webhookBodyTemplate: StateFlow<String> = _webhookBodyTemplate
-
     private val _isPaired = MutableStateFlow(settings.isPaired)
     val isPaired: StateFlow<Boolean> = _isPaired
 
@@ -172,21 +163,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _transcriptionEnabled.value = enabled
     }
 
-    fun setWebhookEnabled(enabled: Boolean) {
-        settings.webhookEnabled = enabled
-        _webhookEnabled.value = enabled
-    }
-
-    fun setWebhookUrl(url: String) {
-        settings.webhookUrl = url
-        _webhookUrl.value = url
-    }
-
-    fun setWebhookBodyTemplate(template: String) {
-        settings.webhookBodyTemplate = template
-        _webhookBodyTemplate.value = template
-    }
-
     fun unpairPendant() {
         settings.clearPairing()
         _isPaired.value = false
@@ -269,9 +245,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _ringDeviceAddress.value = settings.ringDeviceAddress
         _backgroundSyncEnabled.value = settings.backgroundSyncEnabled
         _transcriptionEnabled.value = settings.transcriptionEnabled
-        _webhookEnabled.value = settings.webhookEnabled
-        _webhookUrl.value = settings.webhookUrl
-        _webhookBodyTemplate.value = settings.webhookBodyTemplate
         _isPaired.value = settings.isPaired
         _pairingToken.value = settings.pairingToken
     }

@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import com.middle.app.data.PipelineQueue
 import com.middle.app.data.RecordingsRepository
+import com.middle.app.data.Settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,6 +18,9 @@ class MiddleApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Must run before the pipeline reads the actions, so a legacy global
+        // webhook is already an action by the time a job is processed.
+        Settings(this).migrateGlobalWebhookToAction()
         repository = RecordingsRepository(this)
         pipelineQueue = PipelineQueue(this, applicationScope, repository)
         pipelineQueue.start()

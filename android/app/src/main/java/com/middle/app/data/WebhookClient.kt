@@ -23,7 +23,7 @@ object WebhookClient {
         val body: String
     )
 
-    fun post(webhookUrl: String, transcript: String, bodyTemplate: String): Result {
+    fun post(webhookUrl: String, transcript: String, rest: String, bodyTemplate: String): Result {
         val uri = URI(webhookUrl)
         val userInfo = uri.userInfo
 
@@ -36,9 +36,8 @@ object WebhookClient {
             webhookUrl
         }
 
-        val jsonEscapedText = JSONObject.quote(transcript).removeSurrounding("\"")
-        val json = bodyTemplate.replace("\$transcript", jsonEscapedText)
-        val body = json.toRequestBody("application/json".toMediaType())
+        val body = renderBody(bodyTemplate, transcript, rest)
+            .toRequestBody("application/json".toMediaType())
 
         val requestBuilder = Request.Builder()
             .url(urlWithoutCredentials)
@@ -60,3 +59,23 @@ object WebhookClient {
         }
     }
 }
+
+/**
+ * Substitutes `$transcript` and `$rest` in a webhook body template with the
+ * JSON-escaped values. One pass over the template: an inserted value that
+ * happens to contain another variable token is not substituted again.
+ */
+internal fun renderBody(bodyTemplate: String, transcript: String, rest: String): String {
+    val values = mapOf(
+        "transcript" to jsonEscaped(transcript),
+        "rest" to jsonEscaped(rest),
+    )
+    return TEMPLATE_VARIABLE.replace(bodyTemplate) { match ->
+        values[match.groupValues[1]] ?: match.value
+    }
+}
+
+private val TEMPLATE_VARIABLE = Regex("\\$(transcript|rest)")
+
+private fun jsonEscaped(value: String): String =
+    JSONObject.quote(value).removeSurrounding("\"")

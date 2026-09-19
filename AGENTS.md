@@ -44,8 +44,9 @@
 
 ## test commands
 - Current state: Android unit tests exist under `android/app/src/test/`
-  (`PipelinePolicyTest`, `ActionTest`, `ActionMatcherTest`); no firmware or
-  Python tests are present.
+  (`PipelinePolicyTest`, `ActionTest`, `ActionMatcherTest`, `ActionRunnerTest`,
+  `WebhookClientTest`, `TimeParseClientTest`); no firmware or Python tests are
+  present.
 - Run all Android unit tests (from `android/`): `./gradlew :app:testDebugUnitTest`.
 - Firmware test harness command (if tests are added under PlatformIO):
 - Run all firmware tests: `pio test -e seeed_xiao_esp32s3`.

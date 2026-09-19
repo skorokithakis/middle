@@ -62,9 +62,6 @@ fun SettingsScreen(
     val elevenLabsApiKey by viewModel.elevenLabsApiKey.collectAsState()
     val backgroundSync by viewModel.backgroundSyncEnabled.collectAsState()
     val transcription by viewModel.transcriptionEnabled.collectAsState()
-    val webhookEnabled by viewModel.webhookEnabled.collectAsState()
-    val webhookUrl by viewModel.webhookUrl.collectAsState()
-    val webhookBodyTemplate by viewModel.webhookBodyTemplate.collectAsState()
     val isPaired by viewModel.isPaired.collectAsState()
     val pairingToken by viewModel.pairingToken.collectAsState()
     val pendingImport by viewModel.pendingImport.collectAsState()
@@ -275,48 +272,6 @@ fun SettingsScreen(
                 Switch(
                     checked = transcription,
                     onCheckedChange = { viewModel.setTranscription(it) },
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Webhook", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "POST transcripts to a URL",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Switch(
-                    checked = webhookEnabled,
-                    onCheckedChange = { viewModel.setWebhookEnabled(it) },
-                )
-            }
-
-            if (webhookEnabled) {
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = webhookUrl,
-                    onValueChange = { viewModel.setWebhookUrl(it) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("https://example.com/webhook") },
-                    label = { Text("URL") },
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = webhookBodyTemplate,
-                    onValueChange = { viewModel.setWebhookBodyTemplate(it) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = false,
-                    minLines = 2,
-                    placeholder = { Text("{\"phrase\": \"\$transcript\"}") },
-                    label = { Text("Body template") },
-                    supportingText = { Text("\$transcript is replaced with the transcription text") },
                 )
             }
 

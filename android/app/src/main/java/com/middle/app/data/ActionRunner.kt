@@ -1,0 +1,326 @@
+package com.middle.app.data
+
+import android.Manifest
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.ActivityNotFoundException
+import android.content.ContentUris
+import android.content.ContentValues
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.provider.AlarmClock
+import android.provider.CalendarContract
+import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.middle.app.MainActivity
+import com.middle.app.MiddleApplication
+import com.middle.app.R
+import com.middle.app.transcription.ParsedCommand
+import com.middle.app.transcription.TimeParseClient
+import com.middle.app.transcription.TimeParseResult
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+/**
+ * Executes an ALARM or CALENDAR [ActionHit] against the system.
+ *
+ * [run] blocks while it calls the time parser and writes to a provider, so the
+ * caller runs it on [kotlinx.coroutines.Dispatchers.IO]. It returns true only
+ * when the hit produced a result, which is what lets the caller apply the
+ * action's `stop` and otherwise continue with the next action. A WEBHOOK hit is
+ * not this class's job and always reports no result.
+ *
+ * Every notification uses the `middle_actions` channel. Successes and the
+ * tap-to-set alarm use [MiddleApplication.ACTIONS_NOTIFICATION_ID] so a later
+ * result replaces the pending one; failures use
+ * [MiddleApplication.ACTIONS_INFO_NOTIFICATION_ID] so they cannot replace it.
+ * The tap-to-set alarm is the only notification that does not open the app.
+ */
+class ActionRunner(context: Context) {
+
+    private val appContext = context.applicationContext
+    private val settings = Settings(appContext)
+
+    fun run(hit: ActionHit, transcript: String): Boolean {
+        return when (hit.action.type) {
+            ActionType.ALARM, ActionType.CALENDAR -> {
+                // Refuse a reminder before the LLM call when there is nowhere to
+                // write it, so a missing calendar or permission does not spend
+                // an API request.
+                if (hit.action.type == ActionType.CALENDAR && !calendarReady()) {
+                    Log.w(TAG, "[action] reminder action matched but no calendar is ready")
+                    postInfoNotification(appContext.getString(R.string.calendar_none_notification_text))
+                    return false
+                }
+                val now = ZonedDateTime.now()
+                val command = parseCommand(transcript, now) ?: return false
+                when (hit.action.type) {
+                    ActionType.ALARM -> runAlarm(command, now)
+                    else -> runCalendar(command)
+                }
+            }
+            ActionType.WEBHOOK -> false
+        }
+    }
+
+    /**
+     * Runs the shared time-parse step. Returns null, after posting the matching
+     * info notification, when the key is missing or no time could be read.
+     */
+    private fun parseCommand(transcript: String, now: ZonedDateTime): ParsedCommand? {
+        val apiKey = settings.openAiApiKey
+        if (apiKey.isBlank()) {
+            Log.w(TAG, "[action] time-based action matched but no OpenAI key is set")
+            postInfoNotification(appContext.getString(R.string.actions_missing_api_key_notification_text))
+            return null
+        }
+        return when (val result = TimeParseClient(apiKey).parse(transcript, now)) {
+            is TimeParseResult.Success -> {
+                if (result.command.start == null) {
+                    Log.d(TAG, "[action] time parse found no start time")
+                    postInfoNotification(appContext.getString(R.string.actions_no_time_notification_text))
+                    null
+                } else {
+                    result.command
+                }
+            }
+            is TimeParseResult.Failure -> {
+                Log.w(TAG, "[action] time parse failed: ${result.message}")
+                postInfoNotification(appContext.getString(R.string.actions_no_time_notification_text))
+                null
+            }
+        }
+    }
+
+    private fun runAlarm(command: ParsedCommand, now: ZonedDateTime): Boolean {
+        // An all-day command has a date but no time of day, and an alarm needs a
+        // clock time, so it is treated as a command with no usable time.
+        val start = command.start
+        if (command.allDay || start == null) {
+            postInfoNotification(appContext.getString(R.string.actions_no_time_notification_text))
+            return false
+        }
+        if (isMoreThanOneDayAhead(start.atZone(ZoneId.systemDefault()), now)) {
+            postInfoNotification(appContext.getString(R.string.alarm_too_far_notification_text))
+            return false
+        }
+
+        val intent = alarmIntent(start, command.title)
+        // Starting an activity from the background needs the overlay permission.
+        // Without it the alarm is offered as a notification the user taps.
+        if (android.provider.Settings.canDrawOverlays(appContext)) {
+            try {
+                appContext.startActivity(intent)
+            } catch (exception: ActivityNotFoundException) {
+                Log.w(TAG, "[action] no clock app accepted the alarm", exception)
+                postInfoNotification(appContext.getString(R.string.alarm_could_not_set_notification_text))
+                return false
+            } catch (exception: SecurityException) {
+                Log.w(TAG, "[action] the clock app refused the alarm", exception)
+                postInfoNotification(appContext.getString(R.string.alarm_could_not_set_notification_text))
+                return false
+            }
+            postNotification(
+                appContext.getString(R.string.alarm_set_notification_text, formatClockTime(start)),
+                MiddleApplication.ACTIONS_NOTIFICATION_ID,
+                openMiddlePendingIntent(),
+            )
+            return true
+        }
+
+        postTapToSetNotification(intent, start)
+        return true
+    }
+
+    private fun calendarReady(): Boolean =
+        settings.calendarId != null && hasWriteCalendarPermission()
+
+    private fun runCalendar(command: ParsedCommand): Boolean {
+        // The caller checked readiness before parsing; the checks are repeated
+        // because the permission can be revoked between the two calls.
+        val calendarId = settings.calendarId
+        if (calendarId == null || !hasWriteCalendarPermission()) {
+            Log.w(TAG, "[action] reminder action matched but no calendar is ready")
+            postInfoNotification(appContext.getString(R.string.calendar_none_notification_text))
+            return false
+        }
+        val start = command.start
+        if (start == null) {
+            postInfoNotification(appContext.getString(R.string.actions_no_time_notification_text))
+            return false
+        }
+        val title = command.title ?: appContext.getString(R.string.calendar_default_title)
+
+        return try {
+            insertEvent(calendarId, title, command)
+            val label = reminderTimeLabel(command.allDay, start, Locale.getDefault())
+            val text = if (command.allDay) {
+                appContext.getString(R.string.calendar_added_all_day_notification_text, title, label)
+            } else {
+                appContext.getString(R.string.calendar_added_notification_text, title, label)
+            }
+            postNotification(
+                text,
+                MiddleApplication.ACTIONS_NOTIFICATION_ID,
+                openMiddlePendingIntent(),
+            )
+            true
+        } catch (exception: Exception) {
+            // The provider is a separate process and the write permission can be
+            // revoked between the check above and the insert.
+            Log.e(TAG, "[action] could not add a calendar event", exception)
+            postInfoNotification(appContext.getString(R.string.calendar_could_not_add_notification_text))
+            false
+        }
+    }
+
+    private fun insertEvent(calendarId: Long, title: String, command: ParsedCommand) {
+        val start = command.start ?: return
+        val zone = ZoneId.systemDefault()
+        val values = ContentValues().apply {
+            put(CalendarContract.Events.CALENDAR_ID, calendarId)
+            put(CalendarContract.Events.TITLE, title)
+            // Android expects "UTC" for all-day events; a timed event keeps the
+            // system zone it was parsed in.
+            put(
+                CalendarContract.Events.EVENT_TIMEZONE,
+                if (command.allDay) "UTC" else zone.id,
+            )
+            if (command.allDay) {
+                // An all-day event spans whole UTC days; the local zone only
+                // decides which calendar day it is shown on.
+                val times = allDayEventTimes(start)
+                put(CalendarContract.Events.ALL_DAY, 1)
+                put(CalendarContract.Events.DTSTART, times.startMillis)
+                put(CalendarContract.Events.DTEND, times.endMillis)
+            } else {
+                val times = timedEventTimes(start, command.end, zone)
+                put(CalendarContract.Events.DTSTART, times.startMillis)
+                put(CalendarContract.Events.DTEND, times.endMillis)
+            }
+        }
+        val uri = appContext.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)
+            ?: throw IllegalStateException("Calendar provider returned no event URI")
+
+        if (!command.allDay) {
+            try {
+                val reminder = ContentValues().apply {
+                    put(CalendarContract.Reminders.EVENT_ID, ContentUris.parseId(uri))
+                    put(CalendarContract.Reminders.METHOD, CalendarContract.Reminders.METHOD_ALERT)
+                    put(CalendarContract.Reminders.MINUTES, 0)
+                }
+                val reminderUri =
+                    appContext.contentResolver.insert(CalendarContract.Reminders.CONTENT_URI, reminder)
+                if (reminderUri == null) {
+                    // The event is already saved; a missing alert row is worth a
+                    // log but not a failure the user has to act on.
+                    Log.w(TAG, "[action] calendar event saved without a reminder row")
+                }
+            } catch (exception: Exception) {
+                // The event insert already succeeded, so a failed reminder must
+                // not turn the whole action into a failure the user has to retry.
+                Log.w(TAG, "[action] calendar event saved without a reminder row", exception)
+            }
+        }
+    }
+
+    private fun alarmIntent(start: LocalDateTime, title: String?): Intent =
+        Intent(AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(AlarmClock.EXTRA_HOUR, start.hour)
+            putExtra(AlarmClock.EXTRA_MINUTES, start.minute)
+            putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+            putExtra(AlarmClock.EXTRA_MESSAGE, title ?: appContext.getString(R.string.app_name))
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+    private fun postTapToSetNotification(intent: Intent, start: LocalDateTime) {
+        val pendingIntent = PendingIntent.getActivity(
+            appContext,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        postNotification(
+            appContext.getString(R.string.alarm_tap_notification_text, formatClockTime(start)),
+            MiddleApplication.ACTIONS_NOTIFICATION_ID,
+            pendingIntent,
+        )
+    }
+
+    private fun postInfoNotification(text: String) {
+        postNotification(text, MiddleApplication.ACTIONS_INFO_NOTIFICATION_ID, openMiddlePendingIntent())
+    }
+
+    private fun postNotification(text: String, notificationId: Int, contentIntent: PendingIntent) {
+        val notification = NotificationCompat.Builder(appContext, MiddleApplication.ACTIONS_CHANNEL_ID)
+            .setContentTitle(appContext.getString(R.string.app_name))
+            .setContentText(text)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .build()
+        val manager = appContext.getSystemService(NotificationManager::class.java)
+        manager.notify(notificationId, notification)
+    }
+
+    private fun openMiddlePendingIntent(): PendingIntent =
+        PendingIntent.getActivity(
+            appContext,
+            0,
+            Intent(appContext, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+
+    private fun hasWriteCalendarPermission(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.WRITE_CALENDAR) ==
+            PackageManager.PERMISSION_GRANTED
+
+    companion object {
+        private const val TAG = "ActionRunner"
+    }
+}
+
+/** Epoch-millis bounds of a calendar event, in the event timezone. */
+internal data class EventTimes(val startMillis: Long, val endMillis: Long)
+
+/**
+ * A timed event uses the given end, or half an hour after the start when the
+ * command gave none. The local date-times are resolved in [zone].
+ */
+internal fun timedEventTimes(start: LocalDateTime, end: LocalDateTime?, zone: ZoneId): EventTimes =
+    EventTimes(
+        startMillis = start.atZone(zone).toInstant().toEpochMilli(),
+        endMillis = (end ?: start.plusMinutes(30)).atZone(zone).toInstant().toEpochMilli(),
+    )
+
+/**
+ * An all-day event spans UTC midnight of the date to UTC midnight of the next
+ * date. The parsed start can carry a wall-clock time, which is ignored: the
+ * calendar only needs the date. DTEND is exclusive, so it is the next date.
+ */
+internal fun allDayEventTimes(start: LocalDateTime): EventTimes {
+    val date = start.toLocalDate()
+    return EventTimes(
+        startMillis = date.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+        endMillis = date.plusDays(1).atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli(),
+    )
+}
+
+/** Alarms more than a day out are rejected; exactly 24 hours ahead is allowed. */
+internal fun isMoreThanOneDayAhead(start: ZonedDateTime, now: ZonedDateTime): Boolean =
+    start.isAfter(now.plusHours(24))
+
+/** A short label for the reminder notification, e.g. "Mon 07:30" or "Mon". */
+internal fun reminderTimeLabel(allDay: Boolean, start: LocalDateTime, locale: Locale): String {
+    val pattern = if (allDay) "EEE" else "EEE HH:mm"
+    return start.format(DateTimeFormatter.ofPattern(pattern, locale))
+}
+
+private fun formatClockTime(time: LocalDateTime): String =
+    String.format(Locale.US, "%02d:%02d", time.hour, time.minute)

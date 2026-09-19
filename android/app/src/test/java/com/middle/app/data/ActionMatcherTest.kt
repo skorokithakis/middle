@@ -1,7 +1,6 @@
 package com.middle.app.data
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -12,127 +11,169 @@ class ActionMatcherTest {
         enabled = true,
         type = ActionType.ALARM,
         pattern = Action.DEFAULT_ALARM_PATTERN,
-        suppressWebhook = false,
+        stop = false,
     )
 
-    private fun result(transcript: String, vararg actions: Action): ActionResult =
-        ActionMatcher.evaluate(transcript, actions.toList())
-
-    private fun time(transcript: String): AlarmTime? =
-        result(transcript, alarm).fired.singleOrNull()?.time
+    private fun plan(transcript: String, vararg actions: Action): MatchPlan =
+        ActionMatcher.plan(transcript, actions.toList())
 
     @Test
-    fun parsesBareHourAsTwentyFourHour() {
-        assertEquals(AlarmTime(7, 0), time("Set alarm for 7"))
-        assertEquals(AlarmTime(19, 0), time("Set alarm for 19"))
+    fun hitsPreserveActionListOrder() {
+        val second = alarm.copy(id = "a2", pattern = "buy milk")
+        val result = plan("set an alarm for 7 and buy milk", alarm, second)
+        assertEquals(listOf("a1", "a2"), result.hits.map { it.action.id })
     }
 
     @Test
-    fun parsesHourWithAm() {
-        assertEquals(AlarmTime(7, 0), time("Set alarm for 7am"))
-        assertEquals(AlarmTime(7, 0), time("Set alarm for 7 a.m."))
-        assertEquals(AlarmTime(7, 0), time("Set alarm for 7 AM"))
+    fun hitIndexIsThePositionInTheActionList() {
+        val second = alarm.copy(id = "a2", pattern = "buy milk")
+        val result = plan("set an alarm for 7 and buy milk", alarm, second)
+        assertEquals(listOf(0, 1), result.hits.map { it.index })
     }
 
     @Test
-    fun parsesHourWithPm() {
-        assertEquals(AlarmTime(19, 0), time("Set alarm for 7pm"))
-        assertEquals(AlarmTime(19, 0), time("Set alarm for 7 p.m."))
+    fun stopHaltsEvaluationOfLaterActions() {
+        val stopper = alarm.copy(id = "a1", stop = true)
+        val later = alarm.copy(id = "a2", pattern = "buy milk")
+        val result = plan("set an alarm for 7 and buy milk", stopper, later)
+        assertEquals(listOf("a1"), result.hits.map { it.action.id })
     }
 
     @Test
-    fun parsesHourAndMinute() {
-        assertEquals(AlarmTime(7, 30), time("Set alarm for 7:30"))
-        assertEquals(AlarmTime(19, 30), time("Set alarm for 7:30 pm"))
+    fun nonMatchingActionIsSkipped() {
+        assertTrue(plan("buy milk", alarm).hits.isEmpty())
     }
 
     @Test
-    fun parsesTwentyFourHourWithMinutes() {
-        assertEquals(AlarmTime(19, 30), time("Set alarm for 19:30"))
-    }
-
-    @Test
-    fun twelveHourMeridiemBoundaries() {
-        assertEquals(AlarmTime(0, 0), time("Set alarm for 12am"))
-        assertEquals(AlarmTime(12, 0), time("Set alarm for 12pm"))
-    }
-
-    @Test
-    fun outOfRangeHourOrMinuteHasNoTime() {
-        assertTrue(result("Set alarm for 25:00", alarm).fired.isEmpty())
-        assertTrue(result("Set alarm for 7:99", alarm).fired.isEmpty())
-        assertTrue(result("Set alarm for 13pm", alarm).fired.isEmpty())
-        assertEquals(1, result("Set alarm for 25:00", alarm).noTime.size)
-    }
-
-    @Test
-    fun malformedColonTimeHasNoTime() {
-        val suppressor = alarm.copy(suppressWebhook = true)
-        for (transcript in listOf("Set alarm for 7:3", "Set alarm for 7:300")) {
-            val result = result(transcript, suppressor)
-            assertTrue(result.fired.isEmpty())
-            assertEquals(listOf("a1"), result.noTime.map { it.action.id })
-            assertFalse(result.suppressWebhook)
-        }
-    }
-
-    @Test
-    fun textBeforeThePatternIsNotParsedAsTime() {
-        // "20" precedes the trigger; the time is the trailing "7".
-        assertEquals(AlarmTime(7, 0), time("20 minutes pass, set alarm for 7"))
-    }
-
-    @Test
-    fun noParseableTimeGoesToNoTime() {
-        val result = result("Set alarm for soon", alarm)
-        assertTrue(result.fired.isEmpty())
-        assertEquals(listOf("a1"), result.noTime.map { it.action.id })
-        assertFalse(result.suppressWebhook)
-    }
-
-    @Test
-    fun nonMatchingTranscriptDoesNothing() {
-        val result = result("Remind me to buy milk", alarm)
-        assertTrue(result.fired.isEmpty())
-        assertTrue(result.noTime.isEmpty())
-    }
-
-    @Test
-    fun disabledActionsAreIgnored() {
-        val result = result("Set alarm for 7", alarm.copy(enabled = false))
-        assertTrue(result.fired.isEmpty())
-        assertTrue(result.noTime.isEmpty())
+    fun disabledActionsAreSkippedWithoutBeingReported() {
+        val result = plan("set an alarm", alarm.copy(enabled = false))
+        assertTrue(result.hits.isEmpty())
         assertTrue(result.invalid.isEmpty())
     }
 
     @Test
-    fun invalidRegexIsReportedAndNeverCrashes() {
+    fun invalidRegexIsReportedAndLaterActionsStillMatch() {
         val broken = alarm.copy(id = "bad", pattern = "([")
-        val result = result("Set alarm for 7", broken)
-        assertTrue(result.fired.isEmpty())
+        val good = alarm.copy(id = "good", pattern = "buy milk")
+        val result = plan("buy milk", broken, good)
         assertEquals(listOf("bad"), result.invalid.map { it.id })
+        assertEquals(listOf("good"), result.hits.map { it.action.id })
     }
 
     @Test
-    fun suppressWebhookIsSetByFiredActionOnly() {
-        val suppressor = alarm.copy(suppressWebhook = true)
-        assertTrue(result("Set alarm for 7", suppressor).suppressWebhook)
-        assertTrue(result("Set alarm for 7", alarm).suppressWebhook.not())
-        // A no-time match must not suppress even when the action is flagged.
-        assertFalse(result("Set alarm for soon", suppressor).suppressWebhook)
+    fun restIsTextAfterTheMatchTrimmed() {
+        val action = alarm.copy(pattern = "note to self")
+        val hit = plan("Note to self, buy milk!", action).hits.single()
+        assertEquals(", buy milk!", hit.rest)
     }
 
     @Test
-    fun capitalsAndPunctuationAreHandled() {
-        val result = result("SET ALARM AT 7 A.M.!", alarm)
-        assertEquals(AlarmTime(7, 0), result.fired.single().time)
+    fun restHandlesCapitalsAndPunctuation() {
+        val hit = plan("SET ALARM AT 7 A.M.!", alarm).hits.single()
+        assertEquals("7 A.M.!", hit.rest)
     }
 
     @Test
-    fun resultsPreserveInputOrderAcrossActions() {
-        val second = alarm.copy(id = "a2", suppressWebhook = true)
-        val result = result("Set alarm for 7", alarm, second)
-        assertEquals(listOf("a1", "a2"), result.fired.map { it.action.id })
-        assertTrue(result.suppressWebhook)
+    fun catchAllLeavesAnEmptyRest() {
+        val catchAll = alarm.copy(
+            id = "hook",
+            type = ActionType.WEBHOOK,
+            pattern = Action.DEFAULT_WEBHOOK_PATTERN,
+            stop = false,
+        )
+        val hit = plan("buy milk", catchAll).hits.single()
+        assertEquals("", hit.rest)
+    }
+
+    @Test
+    fun stoppingWebhookHidesLaterCatchAllAndKeepsTheTailAsRest() {
+        val note = alarm.copy(
+            id = "note",
+            type = ActionType.WEBHOOK,
+            pattern = "note to self",
+            stop = true,
+        )
+        val catchAll = alarm.copy(
+            id = "catch-all",
+            type = ActionType.WEBHOOK,
+            pattern = Action.DEFAULT_WEBHOOK_PATTERN,
+            stop = false,
+        )
+        val result = plan("note to self buy milk", note, alarm, catchAll)
+        assertEquals(listOf("note"), result.hits.map { it.action.id })
+        assertEquals("buy milk", result.hits.single().rest)
+    }
+
+    @Test
+    fun plainTranscriptFallsThroughToTheCatchAllWithEmptyRest() {
+        val note = alarm.copy(
+            id = "note",
+            type = ActionType.WEBHOOK,
+            pattern = "note to self",
+            stop = true,
+        )
+        val catchAll = alarm.copy(
+            id = "catch-all",
+            type = ActionType.WEBHOOK,
+            pattern = Action.DEFAULT_WEBHOOK_PATTERN,
+            stop = false,
+        )
+        val result = plan("just a thought", note, alarm, catchAll)
+        assertEquals(listOf("catch-all"), result.hits.map { it.action.id })
+        assertEquals("", result.hits.single().rest)
+    }
+
+    @Test
+    fun restForRerunsASinglePatternWithoutStopSemantics() {
+        assertEquals("buy milk", ActionMatcher.restFor("note to self", "note to self buy milk"))
+        assertEquals("", ActionMatcher.restFor(Action.DEFAULT_WEBHOOK_PATTERN, "anything"))
+        assertEquals(null, ActionMatcher.restFor("note to self", "buy milk"))
+        assertEquals(null, ActionMatcher.restFor("([", "buy milk"))
+    }
+
+    @Test
+    fun catchAllHitCanStopLaterActions() {
+        val stopper = alarm.copy(id = "a1", pattern = ".*", stop = true)
+        val later = alarm.copy(id = "a2", pattern = "buy milk")
+        val result = plan("buy milk", stopper, later)
+        assertEquals(listOf("a1"), result.hits.map { it.action.id })
+    }
+
+    @Test
+    fun planFromResumesAfterAFailedStopHit() {
+        val stopper = alarm.copy(id = "a1", stop = true)
+        val catchAll = alarm.copy(id = "a2", pattern = "buy milk")
+        val actions = listOf(stopper, catchAll)
+
+        val first = ActionMatcher.plan("set an alarm for 7 and buy milk", actions)
+        assertEquals(listOf("a1"), first.hits.map { it.action.id })
+
+        // The runner found the stop hit produced nothing; resume after it.
+        val resumed = ActionMatcher.planFrom(
+            "set an alarm for 7 and buy milk",
+            actions,
+            first.hits.single().index + 1,
+        )
+        assertEquals(listOf("a2"), resumed.hits.map { it.action.id })
+    }
+
+    @Test
+    fun planFromResumesByIndexWhenIdsAreDuplicated() {
+        // Duplicate ids (an imported backup) must not resolve to the first copy,
+        // or a failed stop hit would be re-planned forever.
+        val firstStop = alarm.copy(id = "dup", stop = true)
+        val secondStop = alarm.copy(id = "dup", stop = true)
+        val later = alarm.copy(id = "a3", pattern = "buy milk")
+        val actions = listOf(firstStop, secondStop, later)
+        val transcript = "set an alarm for 7 and buy milk"
+
+        val first = ActionMatcher.plan(transcript, actions)
+        assertEquals(listOf(0), first.hits.map { it.index })
+
+        val afterFirst = ActionMatcher.planFrom(transcript, actions, first.hits.single().index + 1)
+        assertEquals(listOf(1), afterFirst.hits.map { it.index })
+
+        val afterSecond = ActionMatcher.planFrom(transcript, actions, afterFirst.hits.single().index + 1)
+        assertEquals(listOf("a3"), afterSecond.hits.map { it.action.id })
     }
 }

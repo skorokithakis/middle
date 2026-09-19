@@ -7,38 +7,52 @@ import org.json.JSONObject
 
 enum class ActionType {
     ALARM,
+    CALENDAR,
+    WEBHOOK,
 }
 
 /**
  * A user-defined action that runs against a transcript after transcription.
- * The whole list is persisted as one JSON array string in [Settings].
+ * The whole list is persisted as one JSON array string in [Settings], and the
+ * array order is the order the actions run in.
  */
 data class Action(
     val id: String,
     val enabled: Boolean,
     val type: ActionType,
     val pattern: String,
-    val suppressWebhook: Boolean,
+    val stop: Boolean,
+    val webhookUrl: String = "",
+    val webhookBodyTemplate: String = "",
 ) {
     private fun toJsonObject(): JSONObject = JSONObject().apply {
         put(FIELD_ID, id)
         put(FIELD_ENABLED, enabled)
         put(FIELD_TYPE, type.name)
         put(FIELD_PATTERN, pattern)
-        put(FIELD_SUPPRESS_WEBHOOK, suppressWebhook)
+        put(FIELD_STOP, stop)
+        put(FIELD_WEBHOOK_URL, webhookUrl)
+        put(FIELD_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
     }
 
     companion object {
         // The matcher compiles patterns with IGNORE_CASE, so the source is
         // stored as written rather than baked into a Regex here.
         const val DEFAULT_ALARM_PATTERN = """\bset (an? )?alarm (for|at)\b"""
+        const val DEFAULT_CALENDAR_PATTERN = """\b(remind me|add (an? )?(appointment|event))\b"""
+        const val DEFAULT_WEBHOOK_PATTERN = ".*"
 
         private const val TAG = "Action"
         private const val FIELD_ID = "id"
         private const val FIELD_ENABLED = "enabled"
         private const val FIELD_TYPE = "type"
         private const val FIELD_PATTERN = "pattern"
-        private const val FIELD_SUPPRESS_WEBHOOK = "suppressWebhook"
+        private const val FIELD_STOP = "stop"
+        // Builds before the rename wrote 'suppressWebhook'; reading accepts it
+        // as a fallback so stored action lists keep loading.
+        private const val FIELD_LEGACY_SUPPRESS_WEBHOOK = "suppressWebhook"
+        private const val FIELD_WEBHOOK_URL = "webhookUrl"
+        private const val FIELD_WEBHOOK_BODY_TEMPLATE = "webhookBodyTemplate"
 
         fun toJson(actions: List<Action>): String =
             JSONArray().apply { actions.forEach { put(it.toJsonObject()) } }.toString()
@@ -87,8 +101,13 @@ data class Action(
             }
             val enabled = json.opt(FIELD_ENABLED)
             val pattern = json.opt(FIELD_PATTERN)
-            val suppressWebhook = json.opt(FIELD_SUPPRESS_WEBHOOK)
-            if (enabled !is Boolean || pattern !is String || suppressWebhook !is Boolean) {
+            val stop = json.opt(FIELD_STOP) ?: json.opt(FIELD_LEGACY_SUPPRESS_WEBHOOK)
+            val webhookUrl = if (json.has(FIELD_WEBHOOK_URL)) json.opt(FIELD_WEBHOOK_URL) else ""
+            val webhookBodyTemplate =
+                if (json.has(FIELD_WEBHOOK_BODY_TEMPLATE)) json.opt(FIELD_WEBHOOK_BODY_TEMPLATE) else ""
+            if (enabled !is Boolean || pattern !is String || stop !is Boolean ||
+                webhookUrl !is String || webhookBodyTemplate !is String
+            ) {
                 Log.w(TAG, "Skipping action $id: malformed field")
                 return null
             }
@@ -97,7 +116,9 @@ data class Action(
                 enabled = enabled,
                 type = type,
                 pattern = pattern,
-                suppressWebhook = suppressWebhook,
+                stop = stop,
+                webhookUrl = webhookUrl,
+                webhookBodyTemplate = webhookBodyTemplate,
             )
         }
     }

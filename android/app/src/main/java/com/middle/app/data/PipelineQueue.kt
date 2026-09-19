@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
@@ -88,8 +89,8 @@ class PipelineQueue(
 
     /**
      * Creates a job for [filename] at TRANSCRIBE, or WEBHOOK when the transcript
-     * already exists, and does nothing when the transcript exists and the
-     * webhook is disabled.
+     * already exists and an action matches a webhook, and does nothing when the
+     * transcript exists with no webhook to deliver.
      */
     fun enqueue(filename: String) {
         synchronized(lock) {
@@ -105,8 +106,15 @@ class PipelineQueue(
      */
     fun retryNow(filename: String) {
         synchronized(lock) {
-            if (ensureJobLocked(filename)) {
-                backoffByFilename.getOrPut(filename) { BackoffState() }.dueNowRequested = true
+            // A WEBHOOK job already holds the ids matched at transcription time.
+            // Re-planning would recompute them from the transcript and could
+            // lose an id the user just re-enabled, so an existing job keeps its
+            // persisted ids and is only made due now.
+            val hasWebhookJob = readJobsLocked().any {
+                it.filename == filename && it.stage == PipelineStage.WEBHOOK
+            }
+            if (hasWebhookJob || ensureJobLocked(filename)) {
+                resetBackoffLocked(filename)
             }
             refreshPendingFilenamesLocked()
         }
@@ -249,6 +257,16 @@ class PipelineQueue(
             now - state.offlineSinceMillis >= PipelinePolicy.MAX_BACKOFF_MILLIS
 
     private suspend fun attemptTranscribe(job: PipelineJob): AttemptResult {
+        // A crash between saving the transcript and advancing the job leaves a
+        // TRANSCRIBE job whose transcript is already on disk. Re-running the API
+        // would spend a request and re-run local actions, so advance by pattern
+        // alone exactly as a manual retry would.
+        if (transcriptFile(job.filename).exists()) {
+            Log.i(TAG, "[action] transcript already present, skipping local actions")
+            advanceByRegexOnly(job.filename)
+            return AttemptResult.SUCCESS
+        }
+
         val provider = settings.transcriptionProvider
         val apiKey = selectedApiKey(provider)
         if (apiKey.isEmpty()) {
@@ -317,46 +335,101 @@ class PipelineQueue(
     }
 
     private fun advanceAfterTranscription(filename: String) {
-        // Action handling is best-effort: a failure here (for example a
-        // SecurityException from the clock app) must not leave the job at
-        // TRANSCRIBE, where it would be retried and the recording transcribed
-        // again. On failure the webhook is still sent, so fail open.
-        val suppressWebhook = try {
-            val transcript = transcriptFile(filename)
-            val result = ActionMatcher.evaluate(
-                if (transcript.exists()) transcript.readText() else "",
-                settings.actions,
-            )
-            logInvalidActions(result)
-            // Actions are run once here, on the only successful transcription
-            // of a recording; the later webhook stage never evaluates them
-            // again.
-            AlarmActionRunner.run(appContext, result)
-            result.suppressWebhook
+        // The action phase runs on the worker's IO dispatcher, where
+        // transcription already runs, and ActionRunner blocks on the network
+        // and the calendar provider.
+        val transcript = transcriptFile(filename)
+        val transcriptText = if (transcript.exists()) transcript.readText() else ""
+        val actions = settings.actions
+
+        val webhookActionIds = try {
+            runActions(transcriptText, actions)
         } catch (exception: Exception) {
-            Log.e(TAG, "[action] action handling failed for $filename; sending webhook", exception)
-            false
+            // A runner failure (for example a SecurityException from the clock
+            // app) must not lose webhook delivery, so fall back to matching the
+            // WEBHOOK actions by pattern alone.
+            Log.e(TAG, "[action] action handling failed for $filename; collecting webhooks by pattern", exception)
+            collectWebhookIdsByRegex(transcriptText, actions)
         }
 
-        val webhookConfigured = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
         synchronized(lock) {
-            when {
-                webhookConfigured && !suppressWebhook ->
-                    writeJobLocked(filename, PipelineStage.WEBHOOK)
-                else -> {
-                    if (webhookConfigured) {
-                        WebhookLog.info("[action] webhook suppressed by alarm action")
-                    }
-                    deleteJobLocked(filename)
-                }
+            if (webhookActionIds.isNotEmpty()) {
+                writeJobLocked(filename, PipelineStage.WEBHOOK, webhookActionIds)
+            } else {
+                deleteJobLocked(filename)
             }
             refreshPendingFilenamesLocked()
         }
     }
 
+    /**
+     * Runs the ordered plan against [transcript] and returns the WEBHOOK action
+     * ids to deliver, in order. ALARM/CALENDAR hits go through [ActionRunner];
+     * when such a `stop` hit produces nothing, evaluation resumes after it,
+     * because the matcher applies `stop` optimistically.
+     */
+    private fun runActions(transcript: String, actions: List<Action>): List<String> {
+        val runner = ActionRunner(appContext)
+        val webhookActionIds = mutableListOf<String>()
+        var startIndex = 0
+
+        while (startIndex < actions.size) {
+            val plan = ActionMatcher.planFrom(transcript, actions, startIndex)
+            logInvalidActions(plan)
+            if (plan.hits.isEmpty()) break
+
+            var resumeAt = -1
+            for (hit in plan.hits) {
+                when (hit.action.type) {
+                    ActionType.WEBHOOK -> webhookActionIds.add(hit.action.id)
+                    ActionType.ALARM, ActionType.CALENDAR -> {
+                        // A runner crash on one hit must not abort the whole
+                        // plan: treat it as producing nothing so the ids already
+                        // collected still get delivered and later hits run. The
+                        // outer catch in advanceAfterTranscription remains the
+                        // last resort for anything outside a single hit.
+                        val produced = try {
+                            runner.run(hit, transcript)
+                        } catch (exception: Exception) {
+                            Log.e(TAG, "[action] action ${hit.action.id} failed; continuing", exception)
+                            false
+                        }
+                        if (!produced && hit.action.stop) {
+                            // Resume from the hit's position in the list, not
+                            // its id: ids are not guaranteed unique (imported
+                            // backups), so an id lookup could land on an earlier
+                            // duplicate and never advance.
+                            resumeAt = hit.index + 1
+                            break
+                        }
+                    }
+                }
+            }
+            // Belt and braces: a plan whose hits do not move the cursor
+            // forward would loop forever, so stop instead.
+            if (resumeAt <= startIndex) break
+            startIndex = resumeAt
+        }
+        return webhookActionIds
+    }
+
+    /**
+     * Collects the WEBHOOK ids a regex-only plan would deliver. Used when the
+     * runner must not run: a manual retry, or a crash in the action phase. The
+     * matcher already stops at the first `stop` hit, so a blocking
+     * ALARM/CALENDAR still hides the webhooks after it.
+     */
+    private fun collectWebhookIdsByRegex(transcript: String, actions: List<Action>): List<String> {
+        val plan = ActionMatcher.plan(transcript, actions)
+        logInvalidActions(plan)
+        return plan.hits.filter { it.action.type == ActionType.WEBHOOK }.map { it.action.id }
+    }
+
     private fun attemptWebhook(job: PipelineJob) {
-        val webhookUrl = settings.webhookUrl.trim()
-        if (!settings.webhookEnabled || webhookUrl.isEmpty()) {
+        if (job.webhookActionIds.isEmpty()) {
+            // A job queued before webhooks moved into actions has no ids left to
+            // deliver, so it is dropped rather than retried forever.
+            Log.d(TAG, "Dropping webhook job for ${job.filename}: no pending action ids")
             deleteJob(job.filename)
             return
         }
@@ -368,67 +441,119 @@ class PipelineQueue(
             return
         }
 
-        val template = settings.webhookBodyTemplate.ifBlank { Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE }
-        val result = try {
-            WebhookClient.post(webhookUrl, transcriptFile.readText(), template)
-        } catch (exception: Exception) {
-            WebhookLog.error("Webhook error for ${job.filename}: ${exception::class.simpleName}: ${exception.message}")
-            bumpAttempt(job.filename)
-            return
-        }
+        val transcript = transcriptFile.readText()
+        val actions = settings.actions
+        val remaining = job.webhookActionIds.toMutableList()
 
-        when (PipelinePolicy.classifyWebhook(result.success, result.code)) {
-            WebhookOutcome.SUCCESS -> {
-                WebhookLog.info("Webhook sent for ${job.filename} (${result.code})")
-                deleteJob(job.filename)
+        while (remaining.isNotEmpty()) {
+            // The job is deleted when its recording is deleted. A request that
+            // is already in flight can finish after that, so stop rather than
+            // recreate the job (and re-queue work for a gone recording).
+            if (!jobStillExists(job.filename)) {
+                Log.d(TAG, "Stopping webhook delivery for ${job.filename}: job was removed")
+                return
             }
-            WebhookOutcome.DROP -> {
-                WebhookLog.error("Webhook abandoned for ${job.filename}: ${result.code} ${result.message}")
-                Log.w(TAG, "Webhook abandoned for ${job.filename}: ${result.code}")
-                deleteJob(job.filename)
+
+            val id = remaining.first()
+            val action = actions.find { it.id == id && it.type == ActionType.WEBHOOK && it.enabled }
+            if (action == null || action.webhookUrl.isBlank()) {
+                // The action was deleted or disabled since the job was queued,
+                // or has nowhere to go: drop it instead of retrying forever.
+                WebhookLog.info("Webhook action $id is gone; skipping for ${job.filename}")
+                remaining.removeAt(0)
+                if (!persistWebhookIds(job.filename, remaining)) return
+                continue
             }
-            WebhookOutcome.RETRY -> {
-                WebhookLog.error("Webhook failed for ${job.filename}: ${result.code} ${result.message}")
+
+            val rest = ActionMatcher.restFor(action.pattern, transcript) ?: ""
+            val template = action.webhookBodyTemplate.ifBlank { Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE }
+            val result = try {
+                WebhookClient.post(action.webhookUrl, transcript, rest, template)
+            } catch (exception: Exception) {
+                WebhookLog.error("Webhook error for ${job.filename} ($id): ${exception::class.simpleName}: ${exception.message}")
                 bumpAttempt(job.filename)
+                return
+            }
+
+            when (PipelinePolicy.classifyWebhook(result.success, result.code)) {
+                WebhookOutcome.SUCCESS -> {
+                    WebhookLog.info("Webhook sent for ${job.filename} ($id, ${result.code})")
+                    remaining.removeAt(0)
+                    if (!persistWebhookIds(job.filename, remaining)) return
+                }
+                WebhookOutcome.DROP -> {
+                    WebhookLog.error("Webhook abandoned for ${job.filename} ($id): ${result.code} ${result.message}")
+                    Log.w(TAG, "Webhook abandoned for ${job.filename} ($id): ${result.code}")
+                    remaining.removeAt(0)
+                    if (!persistWebhookIds(job.filename, remaining)) return
+                }
+                WebhookOutcome.RETRY -> {
+                    WebhookLog.error("Webhook failed for ${job.filename} ($id): ${result.code} ${result.message}")
+                    // Stop this pass: the id stays first in the persisted job so
+                    // it is retried before the ones behind it.
+                    bumpAttempt(job.filename)
+                    return
+                }
             }
         }
     }
+
+    /**
+     * Persists the still-pending ids, deleting the job when none remain.
+     * Returns false without writing when the job was removed (the recording was
+     * deleted) while the request was in flight, so it is not recreated.
+     */
+    private fun persistWebhookIds(filename: String, ids: List<String>): Boolean {
+        synchronized(lock) {
+            if (!jobFile(filename).exists()) return false
+            if (ids.isEmpty()) {
+                deleteJobLocked(filename)
+            } else {
+                writeJobLocked(filename, PipelineStage.WEBHOOK, ids)
+            }
+            refreshPendingFilenamesLocked()
+        }
+        return true
+    }
+
+    private fun jobStillExists(filename: String): Boolean =
+        synchronized(lock) { jobFile(filename).exists() }
 
     private fun ensureJobLocked(filename: String): Boolean {
-        val transcriptExists = transcriptFile(filename).exists()
-        val webhookConfigured = settings.webhookEnabled && settings.webhookUrl.trim().isNotEmpty()
-        // The suppress check is applied without running the alarms again, so a
-        // suppressed transcript cannot leak its webhook on a manual retry.
-        val webhookSuppressed = webhookConfigured && isWebhookSuppressedByAction(filename)
-        if (webhookSuppressed) {
-            WebhookLog.info("[action] webhook suppressed by alarm action")
-        }
-        return when {
-            !transcriptExists -> {
-                writeJobLocked(filename, PipelineStage.TRANSCRIBE)
-                true
-            }
-            webhookConfigured && !webhookSuppressed -> {
-                writeJobLocked(filename, PipelineStage.WEBHOOK)
-                true
-            }
-            else -> {
-                deleteJobLocked(filename)
-                false
-            }
-        }
-    }
-
-    private fun isWebhookSuppressedByAction(filename: String): Boolean {
         val transcript = transcriptFile(filename)
-        if (!transcript.exists()) return false
-        val result = ActionMatcher.evaluate(transcript.readText(), settings.actions)
-        logInvalidActions(result)
-        return result.suppressWebhook
+        if (!transcript.exists()) {
+            writeJobLocked(filename, PipelineStage.TRANSCRIBE)
+            return true
+        }
+        // A manual retry never runs the alarms again, so it plans by pattern
+        // only; the runner is left for a successful transcription.
+        val webhookActionIds = collectWebhookIdsByRegex(transcript.readText(), settings.actions)
+        return if (webhookActionIds.isNotEmpty()) {
+            writeJobLocked(filename, PipelineStage.WEBHOOK, webhookActionIds)
+            true
+        } else {
+            deleteJobLocked(filename)
+            false
+        }
     }
 
-    private fun logInvalidActions(result: ActionResult) {
-        for (action in result.invalid) {
+    /**
+     * Advances [filename] to a WEBHOOK job with the ids a regex-only plan
+     * matches, or deletes the job when none match. The local actions do not run.
+     */
+    private fun advanceByRegexOnly(filename: String) {
+        synchronized(lock) {
+            // The caller saw the recording, but it can be deleted while the
+            // transcription is in flight; do not recreate a job for a recording
+            // that is gone.
+            if (!jobFile(filename).exists()) return
+            ensureJobLocked(filename)
+            refreshPendingFilenamesLocked()
+        }
+    }
+
+    private fun logInvalidActions(plan: MatchPlan) {
+        for (action in plan.invalid) {
             Log.w(TAG, "[action] invalid pattern for action ${action.id}")
         }
     }
@@ -440,6 +565,12 @@ class PipelineQueue(
             state.lastAttemptMillis = System.currentTimeMillis()
             state.dueNowRequested = false
         }
+    }
+
+    /** Clears the retry history and makes the job due immediately. */
+    private fun resetBackoffLocked(filename: String) {
+        backoffByFilename.remove(filename)
+        backoffByFilename.getOrPut(filename) { BackoffState() }.dueNowRequested = true
     }
 
     private fun deleteJob(filename: String) {
@@ -454,10 +585,18 @@ class PipelineQueue(
         backoffByFilename.remove(filename)
     }
 
-    private fun writeJobLocked(filename: String, stage: PipelineStage) {
+    private fun writeJobLocked(
+        filename: String,
+        stage: PipelineStage,
+        webhookActionIds: List<String> = emptyList(),
+    ) {
         val json = JSONObject().apply {
             put(FIELD_FILENAME, filename)
             put(FIELD_STAGE, stage.name)
+            // Optional: only WEBHOOK jobs with pending actions carry it.
+            if (webhookActionIds.isNotEmpty()) {
+                put(FIELD_WEBHOOK_ACTION_IDS, JSONArray(webhookActionIds))
+            }
         }
         val target = jobFile(filename)
         // writeText truncates first, so a crash mid-write would leave a partial
@@ -487,7 +626,16 @@ class PipelineQueue(
                     file.delete()
                     null
                 } else {
-                    PipelineJob(filename, stage)
+                    // Absent or malformed entries read as no pending ids, which
+                    // a WEBHOOK job then drops on its next pass.
+                    val webhookActionIds = json.optJSONArray(FIELD_WEBHOOK_ACTION_IDS)
+                        ?.let { array ->
+                            (0 until array.length()).mapNotNull { index ->
+                                array.optString(index).takeIf { it.isNotEmpty() }
+                            }
+                        }
+                        ?: emptyList()
+                    PipelineJob(filename, stage, webhookActionIds)
                 }
             } catch (exception: JSONException) {
                 Log.w(TAG, "Discarding malformed pipeline job ${file.name}", exception)
@@ -593,13 +741,18 @@ class PipelineQueue(
         var keyMissing: Boolean = false,
     )
 
-    private data class PipelineJob(val filename: String, val stage: PipelineStage)
+    private data class PipelineJob(
+        val filename: String,
+        val stage: PipelineStage,
+        val webhookActionIds: List<String> = emptyList(),
+    )
 
     private enum class AttemptResult { SUCCESS, TRANSIENT, AUTH, BAD_FILE, MISSING_KEY, DROPPED }
 
     private companion object {
         const val FIELD_FILENAME = "filename"
         const val FIELD_STAGE = "stage"
+        const val FIELD_WEBHOOK_ACTION_IDS = "webhookActionIds"
 
         // A missing key is not an attempt, so it must not use the attempt
         // backoff: checking every couple of seconds would poll settings and the

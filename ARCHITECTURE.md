@@ -22,29 +22,30 @@ middle/
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
 │       ├── data/         # Recordings, actions, webhook client, pipeline queue, settings
-│       │   ├── Action.kt               # User-defined action; list persisted as one JSON array string
-│       │   ├── ActionMatcher.kt        # Pure pattern/when rules evaluated against a transcript (unit tested)
-│       │   ├── AlarmActionRunner.kt    # Starts the system clock app or posts a tap-to-set notification
-│       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs (one JSON file per recording)
+│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK enum; list persisted as one JSON array string
+│       │   ├── ActionMatcher.kt        # Pure ordered pattern/rest rules, no time parsing (unit tested)
+│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR hits: time-parse, clock app or calendar write
+│       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs; runs the action phase after a transcription
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
 │       │   ├── RecordingsRepository.kt # StateFlow of recordings; encodes IMA→M4A on save
-│       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (API key, toggles, webhook, sync device type, ring address); JSON backup export/import
-│       │   ├── WebhookClient.kt        # OkHttp POST with Basic Auth from URL credentials
+│       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (keys, toggles, calendar, actions, device); migrates the legacy webhook; version 2 JSON backup
+│       │   ├── WebhookClient.kt        # OkHttp POST, Basic Auth from URL credentials, $transcript/$rest body substitution
 │       │   └── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
 │       ├── audio/        # IMA ADPCM decoder, audio encoder
 │       │   ├── ImaAdpcmDecoder.kt      # Pure-Kotlin ADPCM decoder (mirrors firmware exactly)
 │       │   └── AudioEncoder.kt         # MediaCodec AAC encoder → M4A via MediaMuxer
 │       ├── transcription/
+│       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
-│       │   ├── ActionsScreen.kt        # Action list; add/delete/toggle/edit pattern and webhook suppression
+│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook, reorder/delete; calendar picker and overlay card
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
-│       │   ├── SettingsScreen.kt       # API key, toggles, webhook, sync device and ring picker, settings backup export/import
-│       │   ├── LogScreen.kt            # Webhook delivery log (monospace, error-coloured)
+│       │   ├── SettingsScreen.kt       # Provider/API key, toggles, sync device and ring picker, settings backup export/import
+│       │   ├── LogScreen.kt            # Pipeline and webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
-│       │   ├── ActionsViewModel.kt     # Reads/writes the action list as a StateFlow
+│       │   ├── ActionsViewModel.kt     # Reads/writes the ordered action list; adds by type, moves, lists calendars for the picker
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual pipeline retry
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
@@ -140,8 +141,8 @@ INMP441 (I2S, 32-bit stereo) → left channel >> 16 → int16 PCM
   → signed 16-bit PCM
   → MP3 (lameenc, sync.py) or AAC/M4A (MediaCodec, Android)
   → optional transcription (OpenAI gpt-4o-transcribe)
-  → optional actions (ActionMatcher → AlarmClock, or suppress webhook)
-  → optional webhook delivery (POST with configurable JSON body template)
+  → optional actions (ActionMatcher → ActionRunner: clock app or calendar event)
+  → optional per-action webhook delivery (POST with a JSON body template, $transcript/$rest)
 ```
 
 **File format**: `.ima` — 4-byte little-endian uint32 sample count, followed by
@@ -166,10 +167,20 @@ backoff and outcome rules (unit-tested by `PipelinePolicyTest.kt`).
 
 Key details:
 - One JSON job file per recording under `filesDir/pipeline/` (survives process
-  death). The file stores only the stage: `TRANSCRIBE` or `WEBHOOK`. The old
+  death). The file stores the stage: `TRANSCRIBE` or `WEBHOOK`, and for a
+  `WEBHOOK` job the ordered `webhookActionIds` still to deliver. The old
   `filesDir/webhooks/` format is discarded on startup, not migrated.
-- A saved recording is enqueued at `TRANSCRIBE`; success advances the job to
-  `WEBHOOK` when a webhook is configured, otherwise the job is deleted.
+- A saved recording is enqueued at `TRANSCRIBE`; a successful transcription runs
+  the action phase (see Actions), then advances the job to `WEBHOOK` with the
+  matched WEBHOOK action ids, or deletes the job when none matched.
+- Webhook delivery walks the ids in order. An id leaves the job only when it
+  succeeds or is abandoned, so a retried id stays first and later ids cannot
+  overtake it; an id whose action was deleted, disabled or blanked is skipped.
+  If the job file was removed (recording deleted), delivery stops without
+  recreating it.
+- A recording whose transcript already exists (manual retry, or a job resumed
+  after a crash) is planned by pattern only and advanced or deleted from that
+  match: no action runs, so an alarm is never re-fired.
 - Backoff is in memory, not persisted: starts at 2 s, doubles per failed
   attempt, capped at 30 minutes. A restart resets per-job state.
 - A missing API key is not an attempt: it waits a fixed 60 s recheck instead of
@@ -182,7 +193,9 @@ Key details:
   webhook responses are success, drop (4xx except 408/429), or retry. Nothing
   is abandoned except transcription bad-file and webhook 4xx.
 - HTTP delivery is in `WebhookClient.kt` (OkHttp, 10 s connect / 30 s read
-  timeout, Basic Auth extracted from URL credentials).
+  timeout, Basic Auth extracted from URL credentials). The body template
+  substitutes `$transcript` and `$rest` (JSON-escaped, single pass) and defaults
+  to `{"phrase": "$transcript"}`.
 - Manual retry is available from `RecordingsViewModel.retryPipeline()` (triggered
   from the recordings list UI).
 
@@ -191,41 +204,77 @@ Key details:
 ## Actions
 
 Actions are user-defined rules that run once against a transcript after it is
-produced, before any webhook delivery. `Action.kt` is the data class,
-`ActionMatcher.kt` holds the pure matching rules (unit-tested by
-`ActionMatcherTest.kt`; `ActionTest.kt` covers JSON round-tripping), and
-`AlarmActionRunner.kt` performs the side effect.
+produced, before any webhook delivery. `Action.kt` is the data class and the
+`ALARM`/`CALENDAR`/`WEBHOOK` enum, `ActionMatcher.kt` holds the pure ordered
+matching rules (unit-tested by `ActionMatcherTest.kt`; `ActionTest.kt` covers
+JSON parsing and round-tripping), `ActionRunner.kt` performs the ALARM/CALENDAR
+side effects (unit-tested by `ActionRunnerTest.kt`), and `TimeParseClient.kt`
+asks the model for a time (unit-tested by `TimeParseClientTest.kt`).
 
 Key details:
 - The whole list is one JSON array string under a single `Settings` key
-  (`actions`). An absent key reads as an empty list; an entry with an unknown
-  type or malformed fields is skipped and logged rather than failing the list.
-- The only type today is `ALARM`. An enabled action's `pattern` is compiled as a
-  case-insensitive regex; the transcript text after the match is parsed as a time
-  (bare `7` = 07:00, `7pm` = 19:00, optional minutes, `am`/`pm` case- and
-  dot-insensitive). A pattern that does not compile is reported and never
-  matches.
+  (`actions`), and the array order is the evaluation order. An absent key reads
+  as an empty list; an entry with an unknown type or malformed fields is skipped
+  and logged rather than failing the list.
+- Every action has a case-insensitive regex `pattern`, an `enabled` flag and a
+  `stop` flag. `WEBHOOK` actions also carry `webhookUrl` and
+  `webhookBodyTemplate`; `$rest` is the transcript after that pattern's match,
+  trimmed (empty for the `.*` catch-all).
 - Evaluation happens exactly once, in
   `PipelineQueue.advanceAfterTranscription()` on the only successful
-  transcription of a recording. The clock app resolves a past time to tomorrow.
-- The alarm is set by starting the system clock app with
-  `AlarmClock.ACTION_SET_ALARM` (hour, minute, `EXTRA_SKIP_UI`, fixed message),
-  which the manifest may open with `com.android.alarm.permission.SET_ALARM`.
-  Starting an activity from the background needs the "Display over other apps"
-  permission, so without `SYSTEM_ALERT_WINDOW` the alarm is posted as a
-  notification the user taps instead; `ActionsScreen.kt` shows a card to grant it.
-- Alarm confirmations and the tap-to-set notification use the `middle_actions`
-  channel with ID 5, so a later confirmation replaces the pending tap-to-set
-  alarm. Informational notifications (no parseable time, missing clock app, or a
-  `SecurityException` from the clock app) use ID 6 so they cannot replace it.
-- Action handling is best-effort: a failure while matching or running actions is
-  logged and the job still advances with `suppressWebhook = false`, so a failed
-  action cannot leave the recording queued for re-transcription.
-- An action with `suppressWebhook` suppresses the webhook stage only when an
-  alarm actually fired; a no-time match still lets the transcript through.
-- Manual retry (`ensureJobLocked`) re-evaluates the pattern only to decide
-  suppression and never fires the alarm again, so a suppressed transcript cannot
-  leak its webhook on retry.
+  transcription of a recording, on the IO dispatcher. `ActionMatcher.plan()`
+  walks the list in order and collects each enabled action whose pattern matches,
+  up to and including the first hit with `stop = true`. An invalid pattern is
+  reported and never matches, but does not stop the list.
+- `stop` is applied optimistically: if a stopping ALARM/CALENDAR hit produces
+  nothing (no time, LLM failure), evaluation resumes after it with
+  `ActionMatcher.planFrom()`. WEBHOOK hits are collected into the job's
+  `webhookActionIds`, for delivery in that order.
+- ALARM/CALENDAR need an OpenAI key: `TimeParseClient` sends the whole transcript
+  plus the local date/time, weekday and zone, and asks the `gpt-5.6-luna` model
+  for a strict JSON object `{start, end, allDay, title}` with local
+  `YYYY-MM-DDTHH:MM` times. A missing key, an HTTP/parse failure, or a null start
+  posts an info notification and counts as no result.
+- An ALARM starts the system clock app with `AlarmClock.ACTION_SET_ALARM`
+  (hour/minute, `EXTRA_SKIP_UI`, the parsed title or app name). A time more than
+  24 hours ahead is rejected (exactly 24 hours is allowed); an all-day command
+  has no clock time and is treated as no time.
+- A CALENDAR writes directly to the calendar chosen in Actions (its
+  `calendarId`) through `CalendarContract.Events`, without opening the calendar
+  app. A timed event uses the parsed end, or half an hour after the start, in the
+  system zone, and adds a `CalendarContract.Reminders` row at 0 minutes. An
+  all-day event sets `ALL_DAY=1`, timezone `UTC`, and spans UTC midnight of the
+  date to UTC midnight of the next date; the parsed time of day is ignored. A
+  missing or failed reminder row is logged but does not fail the event.
+- The clock app is only started when the app can draw overlays. Without
+  `SYSTEM_ALERT_WINDOW` the alarm is posted as a notification the user taps;
+  `ActionsScreen.kt` shows a card to grant it. The alarm intent needs
+  `com.android.alarm.permission.SET_ALARM`, and reminders need
+  `READ_CALENDAR`/`WRITE_CALENDAR`.
+- All action notifications use the `middle_actions` channel. Successes and the
+  tap-to-set alarm use ID 5 so a later result replaces the pending one; failures
+  and other info use ID 6 so they cannot replace it. The tap-to-set alarm is the
+  only notification that launches the clock app — every other one opens the app.
+- The legacy global webhook settings are migrated into a catch-all WEBHOOK
+  action (`pattern = ".*"`, `stop = false`) by
+  `Settings.migrateGlobalWebhookToAction()`. A non-empty legacy URL migrates
+  whether or not it was enabled, and the action's `enabled` flag mirrors the
+  legacy `webhookEnabled`; the migration guard is the only thing that stops a
+  duplicate. It runs on `MiddleApplication`
+  startup and again at the end of every backup import, and it appends the new
+  action so existing rule order is preserved; the legacy keys are then cleared
+  and a guard stops it repeating. A version 1 backup's webhook is migrated the
+  same way.
+- Action handling is best-effort: a runner exception on one ALARM/CALENDAR hit
+  is logged and treated as producing nothing, so the ids already collected are
+  kept and planning continues. If the phase still throws outside a single hit,
+  it falls back to collecting WEBHOOK ids by pattern alone; with no matching
+  WEBHOOK action the job is deleted.
+- Manual retry never runs an action. An existing WEBHOOK job keeps its persisted
+  `webhookActionIds` and is only made due now; with no job, `ensureJobLocked`
+  plans by pattern only. `$rest` is recomputed at delivery with
+  `ActionMatcher.restFor()`, so a stopped transcript cannot leak its webhook and
+  an alarm cannot fire twice.
 
 ---
 
@@ -277,22 +326,23 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. |
-| Actions | `actions` | List of actions with per-card enable toggle, editable pattern, webhook-suppression toggle and delete. Top bar adds a new alarm action with the default pattern. An overlay-permission card is shown when the permission is missing. |
-| Log | `log` | Monospace webhook delivery log (last 50 entries, errors in red). |
-| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, OpenAI API key (masked), background sync toggle, transcription toggle, webhook toggle + URL + body template. |
+| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields. Top bar adds an alarm, reminder or webhook action. A calendar row picks the calendar for reminders, and an overlay-permission card is shown when the permission is missing. |
+| Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
+| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import. |
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).
 
 The Settings screen can export the configuration to a JSON file and import one
-back. The file is one flat object tagged `version: 1`, keyed by the same
-preference names `Settings.kt` uses. An import parses and type-checks the whole
-file before showing a confirmation dialog and writing nothing until it is
-confirmed; keys absent from the file keep their current value and unknown keys
-are ignored. The import writes through the `Settings` property setters so a
-device type or ring address change restarts the sync service. Actions are
-included, as their serialized JSON array under the same `actions` key. The file
-holds the API keys and pairing token as plain text, so the user must keep it
-private.
+back. The file is one flat object tagged `version: 2` (`BACKUP_VERSION`), keyed
+by the same preference names `Settings.kt` uses. An import parses and
+type-checks the whole file before showing a confirmation dialog and writing
+nothing until it is confirmed; keys absent from the file keep their current
+value and unknown keys are ignored. The import writes through the `Settings`
+property setters so a device type or ring address change restarts the sync
+service. Actions are included, as their serialized JSON array under the same
+`actions` key. Version 1 files still import: their global webhook keys are
+written first, then migrated into a WEBHOOK action (see Actions). The file holds
+the API keys and pairing token as plain text, so the user must keep it private.
 
 A new recording saved by either sync path posts a "New recording added" notification on its own channel, separate from the battery alerts channel. A fixed notification ID means several files saved in one sync collapse into a single notification, and tapping it opens the app on the Recordings screen.
 
@@ -377,10 +427,12 @@ uv run python -m py_compile sync.py    # syntax check
   download recordings. A pre-shared key is listed in `TODO.md` but not yet
   implemented.
 - **Limited automated tests**: `PipelinePolicyTest.kt` unit-tests backoff and
-  outcome classification; `ActionTest.kt` covers action JSON serialization and
-  `ActionMatcherTest.kt` the pattern/time matching rules. There are no firmware
-  tests, Python tests, or Android instrumentation tests. `AGENTS.md` documents
-  the intended commands.
+  outcome classification; `ActionTest.kt` covers action JSON parsing and
+  round-tripping; `ActionMatcherTest.kt` the ordered pattern/rest rules;
+  `ActionRunnerTest.kt` the time/calendar helpers; `WebhookClientTest.kt` the
+  body template substitution; and `TimeParseClientTest.kt` the time-parse
+  response. There are no firmware tests, Python tests, or Android
+  instrumentation tests. `AGENTS.md` documents the intended commands.
 - **`backgroundSyncEnabled` setting is stored but not enforced**: `Settings.kt`
   exposes the toggle and `SettingsScreen.kt` renders it, but
   `SyncForegroundService` does not read it — the service always scans regardless
