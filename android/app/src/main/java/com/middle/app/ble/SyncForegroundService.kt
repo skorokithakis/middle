@@ -214,6 +214,7 @@ class SyncForegroundService : Service() {
                             }
                         }
                     },
+                    onBacklogSkipped = { count -> postBacklogSkippedNotification(count) },
                 )
                 indexSyncLoop.run()
                 Log.d(TAG, "Ring scan flow ended, restarting.")
@@ -586,6 +587,28 @@ class SyncForegroundService : Service() {
         Log.d(TAG, "New recording notification posted.")
     }
 
+    /**
+     * Tells the user that a first ring sync left the recordings already on the
+     * ring alone, so the empty import is expected rather than a failure.
+     */
+    private fun postBacklogSkippedNotification(count: Int) {
+        val notification = NotificationCompat.Builder(this, MiddleApplication.NEW_RECORDING_CHANNEL_ID)
+            .setContentTitle(getString(R.string.ring_backlog_skipped_notification_title))
+            .setContentText(
+                resources.getQuantityString(
+                    R.plurals.ring_backlog_skipped_notification_text,
+                    count,
+                    count,
+                ),
+            )
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setAutoCancel(true)
+            .build()
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager.notify(RING_BACKLOG_SKIPPED_NOTIFICATION_ID, notification)
+        Log.d(TAG, "Ring backlog skip notification posted ($count skipped).")
+    }
+
     private fun generatePairingToken(): ByteArray {
         val bytes = ByteArray(16)
         SecureRandom().nextBytes(bytes)
@@ -642,5 +665,8 @@ class SyncForegroundService : Service() {
         // Null until the service has started its first loop.
         private val _activeDeviceType = MutableStateFlow<String?>(null)
         val activeDeviceType: StateFlow<String?> = _activeDeviceType
+
+        // Never collides with the IDs MiddleApplication owns.
+        private const val RING_BACKLOG_SKIPPED_NOTIFICATION_ID = 4
     }
 }

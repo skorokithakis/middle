@@ -40,6 +40,7 @@ class IndexSyncLoop(
     private val repository: RecordingsRepository,
     scope: CoroutineScope,
     private val onRecordingSaved: (File, String) -> Unit,
+    private val onBacklogSkipped: (Int) -> Unit,
 ) {
 
     private val collectionIndexStorage = RingCollectionIndexStorage(settings)
@@ -67,21 +68,29 @@ class IndexSyncLoop(
      */
     suspend fun run() {
         manager.awaitBluetoothReady()
-        manager.startScanning().collect { status ->
-            when (status) {
-                is SatelliteStatus.Transferring -> handleTransferStatus(status.transferStatus)
-                is SatelliteStatus.BluetoothFailure -> {
-                    Log.w(TAG, "Ring Bluetooth failure on ${status.satellite.id}: ${status.reason}")
+        try {
+            manager.startScanning().collect { status ->
+                when (status) {
+                    is SatelliteStatus.Transferring -> handleTransferStatus(status.transferStatus)
+                    is SatelliteStatus.BluetoothFailure -> {
+                        Log.w(TAG, "Ring Bluetooth failure on ${status.satellite.id}: ${status.reason}")
+                    }
+                    // Firmware updating and user-id programming only happen when the
+                    // host opts into them, which we do not.
+                    else -> Unit
                 }
-                // Firmware updating and user-id programming only happen when the
-                // host opts into them, which we do not.
-                else -> Unit
             }
+        } catch (exception: BacklogSkippedException) {
+            // Returning normally matters: SyncForegroundService restarts the ring
+            // session after run() returns, and the fresh session re-seeds its
+            // index from disk, so the skip must not surface as a failure.
+            Log.d(TAG, "Ended first ring session early after skipping the backlog.")
         }
     }
 
     private suspend fun handleTransferStatus(transferStatus: TransferStatus) {
         when (transferStatus) {
+            is TransferStatus.TransferStarted -> handleTransferStarted(transferStatus)
             is TransferStatus.TransferComplete -> saveTransfer(transferStatus)
             is TransferStatus.TransferFailed -> {
                 Log.w(
@@ -98,9 +107,30 @@ class IndexSyncLoop(
                     transferStatus.exception,
                 )
             }
-            // Started, type-determined and in-progress statuses carry no audio.
+            // Type-determined and in-progress statuses carry no audio.
             else -> Unit
         }
+    }
+
+    /**
+     * On the first sync from a ring, no index is stored yet, so the vendor would
+     * pull its entire backlog. Committing the last index in the range it reports
+     * leaves the next session starting beyond that range and transferring
+     * nothing, which is exactly the state a completed sync leaves behind.
+     */
+    private fun handleTransferStarted(transferStatus: TransferStatus.TransferStarted) {
+        // A null stored index means this ring has never been synced: a fresh
+        // install or a newly selected ring. Both should skip the existing
+        // backlog, so this is the only condition.
+        if (settings.lastSuccessfulCollectionIndex != null) return
+
+        val range = transferStatus.willTransferRange
+        // Write durably only. The in-memory flow still reads null, but the
+        // session ends below, so the next session is what must see the value.
+        collectionIndexStorage.commitLastSuccessfulCollectionIndex(range.last)
+        onBacklogSkipped(range.last - range.first + 1)
+        // Abort from inside the scanning collect, before any audio moves.
+        throw BacklogSkippedException()
     }
 
     // kotlin.time.Instant is still ExperimentalTime in the Kotlin version this
@@ -193,6 +223,12 @@ class IndexSyncLoop(
         }
         return bytes
     }
+
+    /**
+     * Ends a session from inside the vendor's scanning flow, which offers no
+     * way to stop it cooperatively. See [handleTransferStarted].
+     */
+    private class BacklogSkippedException : Exception()
 
     companion object {
         private const val TAG = "IndexSyncLoop"

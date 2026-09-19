@@ -14,4 +14,9 @@
     <string name="new_recording_notification_channel">New recordings</string>
     <string name="new_recording_notification_title">Middle</string>
     <string name="new_recording_notification_text">New recording added</string>
+    <string name="ring_backlog_skipped_notification_title">Older ring recordings skipped</string>
+    <plurals name="ring_backlog_skipped_notification_text">
+        <item quantity="one">Skipped 1 recording that was already on the ring. New recordings will sync normally.</item>
+        <item quantity="other">Skipped %d recordings that were already on the ring. New recordings will sync normally.</item>
+    </plurals>
 </resources>
