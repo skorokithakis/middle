@@ -66,11 +66,15 @@
 
         <!-- No noHistory here: Android does not deliver permission results
              to a noHistory activity, and the first launch may need to ask
-             for RECORD_AUDIO. -->
+             for RECORD_AUDIO. The empty taskAffinity and singleInstance keep
+             the popup in its own task, so it does not pull the rest of
+             Middle in front of the app the user was using. -->
         <activity
             android:name=".AssistActivity"
             android:exported="true"
             android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
             android:theme="@style/Theme.Middle.Assist">
             <intent-filter>
                 <action android:name="android.intent.action.ASSIST" />
