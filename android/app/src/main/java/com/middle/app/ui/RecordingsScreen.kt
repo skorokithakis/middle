@@ -46,6 +46,7 @@ import androidx.core.content.FileProvider
 import com.middle.app.R
 import com.middle.app.ble.SyncForegroundService
 import com.middle.app.data.Recording
+import com.middle.app.data.Settings
 import com.middle.app.viewmodel.RecordingsViewModel
 import java.time.format.DateTimeFormatter
 
@@ -61,6 +62,7 @@ fun RecordingsScreen(
     val currentlyPlaying by viewModel.currentlyPlaying.collectAsState()
     val syncState by SyncForegroundService.syncState.collectAsState()
     val batteryVoltage by SyncForegroundService.batteryVoltage.collectAsState()
+    val activeDeviceType by SyncForegroundService.activeDeviceType.collectAsState()
     var showDeleteAllDialog by remember { mutableStateOf(false) }
 
     if (showDeleteAllDialog) {
@@ -110,29 +112,33 @@ fun RecordingsScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            // Sync status bar.
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                Row(
+            // Sync status bar. Both the status text and the battery reading are
+            // only ever written by the pendant path, so the bar would sit frozen
+            // on stale pendant values while the ring is selected.
+            if (activeDeviceType != Settings.DEVICE_TYPE_RING) {
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
                 ) {
-                    Text(
-                        text = syncState,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        text = "🔋 $batteryVoltage",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = syncState,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            text = "🔋 $batteryVoltage",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -150,7 +156,11 @@ fun RecordingsScreen(
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "Tap the pendant button to record, then bring it near your phone to sync.",
+                        text = if (activeDeviceType == Settings.DEVICE_TYPE_RING) {
+                            "Record on the ring. Recordings sync when the ring is near your phone."
+                        } else {
+                            "Tap the pendant button to record, then bring it near your phone to sync."
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }

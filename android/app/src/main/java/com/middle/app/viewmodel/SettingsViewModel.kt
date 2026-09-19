@@ -35,6 +35,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _bondedDevices = MutableStateFlow<List<BondedDevice>>(emptyList())
     val bondedDevices: StateFlow<List<BondedDevice>> = _bondedDevices
 
+    // True when [bondedDevices] is the unfiltered bond list because no device
+    // was recognised as a ring by name. The picker says so, otherwise the user
+    // is left guessing why unrelated devices are offered.
+    private val _showingUnrecognisedDevices = MutableStateFlow(false)
+    val showingUnrecognisedDevices: StateFlow<Boolean> = _showingUnrecognisedDevices
+
     private val _bluetoothConnectGranted = MutableStateFlow(false)
     val bluetoothConnectGranted: StateFlow<Boolean> = _bluetoothConnectGranted
 
@@ -115,7 +121,30 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             return
         }
         val adapter = application.getSystemService(BluetoothManager::class.java).adapter
-        _bondedDevices.value = adapter.bondedDevices.map { BondedDevice(it.name, it.address) }
+        val storedAddress = settings.ringDeviceAddress
+        val allDevices = adapter.bondedDevices.map { BondedDevice(it.name, it.address) }
+        val recognised = allDevices.filter {
+            it.name?.startsWith(RING_NAME_PREFIX, ignoreCase = true) == true
+        }
+        // The stored ring stays in the list even when its bond name does not
+        // match, because the name comes from the bond record and can be null or
+        // change with firmware. Dropping it would hide a selection that is still
+        // in effect, and the user could not see which ring is in use.
+        val selectable = recognised + allDevices.filter {
+            it.address == storedAddress && it !in recognised
+        }
+        // Falling back to the whole bond list keeps the picker usable when no
+        // name matches, where filtering strictly would leave the user with an
+        // empty list and no way to proceed.
+        _showingUnrecognisedDevices.value = selectable.isEmpty()
+        _bondedDevices.value = selectable.ifEmpty { allDevices }
+        // Only auto-select a device the name filter recognised. Auto-selecting
+        // the single entry of the fallback list could silently store a pair of
+        // headphones as the ring. Storing an address resets the collection
+        // index, so this must not overwrite a ring the user already chose.
+        if (recognised.size == 1 && storedAddress.isEmpty()) {
+            setRingDeviceAddress(recognised.first().address)
+        }
     }
 
     fun setBackgroundSync(enabled: Boolean) {
@@ -147,5 +176,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         settings.clearPairing()
         _isPaired.value = false
         _pairingToken.value = ""
+    }
+
+    companion object {
+        // Index 01 rings bond under a name of the form "Pebble Index XXX",
+        // where the suffix identifies the individual ring.
+        private const val RING_NAME_PREFIX = "Pebble Index"
     }
 }

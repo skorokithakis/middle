@@ -50,7 +50,6 @@ class SyncForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var syncJob: Job? = null
     private var syncLoopJob: Job? = null
-    private var activeDeviceType: String? = null
     private var scanning = false
 
     // Set when the selected ring changed while the ring loop was live. The old
@@ -67,7 +66,7 @@ class SyncForegroundService : Service() {
                 // Ignore writes that set the value that is already running; the
                 // radio buttons call the setter even when the option is already
                 // selected.
-                if (settings.deviceType != activeDeviceType) {
+                if (settings.deviceType != activeDeviceType.value) {
                     startSyncLoop()
                 }
             }
@@ -75,7 +74,7 @@ class SyncForegroundService : Service() {
                 // The running ring session caches the old ring's address and
                 // index, so a new address invalidates it even though the loop
                 // itself does not change.
-                if (activeDeviceType == Settings.DEVICE_TYPE_RING) {
+                if (activeDeviceType.value == Settings.DEVICE_TYPE_RING) {
                     pendingRingIndexReset = true
                     startSyncLoop()
                 }
@@ -127,7 +126,7 @@ class SyncForegroundService : Service() {
      */
     private fun startSyncLoop() {
         val deviceType = settings.deviceType
-        activeDeviceType = deviceType
+        _activeDeviceType.value = deviceType
         // Cancel the old loop synchronously, then wait for its teardown inside
         // the new loop. A ring loop owns a session scope that the vendor uses to
         // launch scanning and transfer work, and waiting for the loop to finish
@@ -176,7 +175,10 @@ class SyncForegroundService : Service() {
     }
 
     private suspend fun runRingSyncLoop() {
-        updateNotification(getString(R.string.sync_notification_scanning))
+        // Set once and never updated: the vendor flow drives ring transfers and
+        // reports no progress back here, so any more specific text would go
+        // stale for the rest of the session.
+        updateNotification(getString(R.string.sync_notification_ring_waiting))
         while (true) {
             // Each attempt gets a fresh session. The IndexSyncLoop seeds the
             // collection index from Settings when it is constructed, so after a
@@ -328,7 +330,7 @@ class SyncForegroundService : Service() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             // A result can still arrive after the scanner was stopped, so ignore
             // it when the ring loop has taken over.
-            if (activeDeviceType == Settings.DEVICE_TYPE_RING) return
+            if (activeDeviceType.value == Settings.DEVICE_TYPE_RING) return
             // Avoid starting multiple sync jobs simultaneously.
             if (syncJob?.isActive == true) return
 
@@ -598,5 +600,12 @@ class SyncForegroundService : Service() {
 
         private val _batteryVoltage = MutableStateFlow("N/A")
         val batteryVoltage: StateFlow<String> = _batteryVoltage
+
+        // The device type of the loop that is currently running. The recordings
+        // screen hides the pendant status bar while the ring is selected,
+        // because the ring path never updates that text or the battery reading.
+        // Null until the service has started its first loop.
+        private val _activeDeviceType = MutableStateFlow<String?>(null)
+        val activeDeviceType: StateFlow<String?> = _activeDeviceType
     }
 }

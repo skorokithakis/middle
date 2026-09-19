@@ -52,6 +52,7 @@ fun SettingsScreen(
     val deviceType by viewModel.deviceType.collectAsState()
     val ringDeviceAddress by viewModel.ringDeviceAddress.collectAsState()
     val bondedDevices by viewModel.bondedDevices.collectAsState()
+    val showingUnrecognisedDevices by viewModel.showingUnrecognisedDevices.collectAsState()
     val bluetoothConnectGranted by viewModel.bluetoothConnectGranted.collectAsState()
     val transcriptionProvider by viewModel.transcriptionProvider.collectAsState()
     val openAiApiKey by viewModel.openAiApiKey.collectAsState()
@@ -138,6 +139,13 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     else -> Column {
+                        if (showingUnrecognisedDevices) {
+                            Text(
+                                text = "No ring recognised among the paired devices, so all of them are listed. Pick the ring yourself.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
                         bondedDevices.forEach { device ->
                             RingDeviceOption(
                                 device = device,
