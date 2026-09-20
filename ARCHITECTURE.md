@@ -353,9 +353,14 @@ long-pressing power starts the activity, which captures from the phone mic with 
 Silero VAD endpointer (`audio/SpeechEndpointer.kt` wrapping `audio/SileroClassifier.kt`)
 instead of running until the user stops. The model's 1500 ms silence hysteresis
 supplies the speech-to-silence edge, and a 5 s no-speech timeout discards a capture
-in which nobody spoke. Leaving the activity stops and saves what was captured, like
-releasing the in-app record button, and the save runs on the application scope so
-finishing the dialog cannot cut it short. The Silero model and its ONNX runtime are
+in which nobody spoke. After the save the card stays open: it shows `Transcribing…`,
+then the transcript once the pipeline writes it (observed through
+`RecordingsRepository.recordings`), and closes 3 s later or immediately when the
+user taps outside. With transcription disabled, no transcript within 30 s, or a
+failed or empty save, it shows a short message instead. Leaving while still
+recording stops and saves without waiting for the transcript, like releasing the
+in-app record button, and the save runs on the application scope so finishing the
+dialog cannot cut it short. The Silero model and its ONNX runtime are
 only published on JitPack (`com.github.gkonovalov.android-vad:silero`), which is why
 the build adds the JitPack Maven repository.
 
