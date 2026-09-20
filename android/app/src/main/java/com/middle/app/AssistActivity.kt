@@ -402,7 +402,7 @@ private fun formatElapsed(seconds: Int): String {
 }
 
 // The card never changes size between states, so only its content swaps.
-private val CARD_WIDTH = 320.dp
-private val CONTENT_HEIGHT = 200.dp
+private val CARD_WIDTH = 300.dp
+private val CONTENT_HEIGHT = 140.dp
 
 private val ICON_SIZE = 64.dp
