@@ -54,6 +54,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -177,33 +178,36 @@ fun RecordingsScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            // Sync status bar. Both the status text and the battery reading are
-            // only ever written by the pendant path, so the bar would sit frozen
-            // on stale pendant values while the ring is selected.
-            if (activeDeviceType != Settings.DEVICE_TYPE_RING) {
-                Card(
+            // Sync status bar, shown for both devices. The ring deliberately
+            // shows a fixed label rather than transfer progress; the pendant
+            // keeps its scanning/syncing status text. The voltage is always the
+            // selected device's own reading, or "N/A" until one arrives.
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+            ) {
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            text = syncState,
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            text = "🔋 $batteryVoltage",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        text = if (activeDeviceType == Settings.DEVICE_TYPE_RING) {
+                            stringResource(R.string.ring_status_label)
+                        } else {
+                            syncState
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "🔋 $batteryVoltage",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 

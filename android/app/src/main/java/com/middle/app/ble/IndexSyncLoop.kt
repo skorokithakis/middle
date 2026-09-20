@@ -41,6 +41,7 @@ class IndexSyncLoop(
     scope: CoroutineScope,
     private val onRecordingSaved: (File, String) -> Unit,
     private val onBacklogSkipped: (Int) -> Unit,
+    private val onBatteryVoltage: (Int?) -> Unit,
 ) {
 
     private val collectionIndexStorage = RingCollectionIndexStorage(settings)
@@ -107,7 +108,13 @@ class IndexSyncLoop(
                     transferStatus.exception,
                 )
             }
-            // Type-determined and in-progress statuses carry no audio.
+            is TransferStatus.TransferTypeDetermined -> {
+                // The ring attaches battery voltage to some collection metadata
+                // and omits it (null) on others, so a missing value is passed on
+                // as null rather than defaulted to zero.
+                onBatteryVoltage(transferStatus.batteryVoltageMilliV?.toInt())
+            }
+            // In-progress statuses carry no audio.
             else -> Unit
         }
     }

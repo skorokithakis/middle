@@ -307,6 +307,20 @@ Both paths hand each saved recording to the process-wide `PipelineQueue` (via
 `MiddleApplication`), which transcribes and delivers it outside the sync
 session, so a cancelled session cannot affect an in-flight job.
 
+The recordings screen's status bar is shown for both devices. The pendant fills
+in its status text and its voltage characteristic's reading. The ring
+deliberately shows a fixed `Index` label rather than transfer progress (the
+vendor does report per-collection status, but the bar does not surface it) and
+reads voltage from the `batteryVoltageMilliV` field of the vendor's collection
+metadata during a transfer. It is a per-collection value, not a live battery
+query. Readings are tracked per device (the device type, plus the ring's
+address) so switching device type or ring never shows another device's value.
+For the ring a missing (null or zero) reading leaves the current value alone
+instead of becoming `0.00V`; the pendant path is unchanged, so a non-null
+pendant 0mV still displays and persists as `0.00V` and still runs the
+low-battery alert. Only the pendant's low-battery alert is posted; the ring has
+no alert.
+
 `BootReceiver` restarts `SyncForegroundService` after `BOOT_COMPLETED` when the
 runtime permissions it needs are already granted; otherwise the user must open
 the app so it can request them.
@@ -338,7 +352,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 
 | Screen | Route | Description |
 |---|---|---|
-| Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. Sync status and battery voltage shown in a header card. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
+| Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. A header card always shows the selected device's sync status (a fixed `Index` label for the ring) and its battery voltage. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
 | Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields. Top bar adds an alarm, reminder or webhook action. A calendar row picks the calendar for reminders, and an overlay-permission card is shown when the permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |

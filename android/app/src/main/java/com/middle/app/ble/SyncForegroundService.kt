@@ -60,6 +60,8 @@ class SyncForegroundService : Service() {
     private lateinit var settings: Settings
     private lateinit var pipelineQueue: PipelineQueue
 
+    private val batteryTracker = BatteryVoltageTracker()
+
     private val sessionChangeListener: (Settings.SessionChange) -> Unit = { change ->
         when (change) {
             Settings.SessionChange.DEVICE_TYPE -> {
@@ -87,7 +89,6 @@ class SyncForegroundService : Service() {
         repository = (application as MiddleApplication).repository
         settings = Settings(this)
         pipelineQueue = (application as MiddleApplication).pipelineQueue
-        _batteryVoltage.value = settings.lastBatteryVoltage
         startForegroundNotification(getString(R.string.sync_notification_idle))
         settings.addSessionChangeListener(sessionChangeListener)
         startSyncLoop()
@@ -128,6 +129,12 @@ class SyncForegroundService : Service() {
     private fun startSyncLoop() {
         val deviceType = settings.deviceType
         _activeDeviceType.value = deviceType
+        val deviceKey = batteryDeviceKey(deviceType, settings.ringDeviceAddress)
+        // The pendant's reading survives a restart in Settings; a ring reading
+        // only lives for the session, since the ring has no live battery query.
+        val fallback =
+            if (deviceType == Settings.DEVICE_TYPE_PENDANT) settings.lastBatteryVoltage else UNKNOWN_BATTERY_VOLTAGE
+        _batteryVoltage.value = batteryTracker.select(deviceKey, fallback)
         // Cancel the old loop synchronously, then wait for its teardown inside
         // the new loop. A ring loop owns a session scope that the vendor uses to
         // launch scanning and transfer work, and waiting for the loop to finish
@@ -144,7 +151,7 @@ class SyncForegroundService : Service() {
         syncLoopJob = scope.launch {
             previousLoop?.join()
             when (deviceType) {
-                Settings.DEVICE_TYPE_RING -> runRingSyncLoop()
+                Settings.DEVICE_TYPE_RING -> runRingSyncLoop(deviceKey)
                 else -> runPendantSyncLoop()
             }
         }
@@ -175,10 +182,9 @@ class SyncForegroundService : Service() {
         }
     }
 
-    private suspend fun runRingSyncLoop() {
-        // Set once and never updated: the vendor flow drives ring transfers and
-        // reports no progress back here, so any more specific text would go
-        // stale for the rest of the session.
+    private suspend fun runRingSyncLoop(ringDeviceKey: String) {
+        // Deliberately fixed: ring transfers are fast enough that surfacing the
+        // vendor's per-collection progress is not worth the extra state.
         updateNotification(getString(R.string.sync_notification_ring_waiting))
         while (true) {
             // Each attempt gets a fresh session. The IndexSyncLoop seeds the
@@ -212,6 +218,10 @@ class SyncForegroundService : Service() {
                         }
                     },
                     onBacklogSkipped = { count -> postBacklogSkippedNotification(count) },
+                    onBatteryVoltage = { millivolts ->
+                        batteryTracker.reportRing(ringDeviceKey, millivolts)
+                            ?.let { _batteryVoltage.value = it }
+                    },
                 )
                 indexSyncLoop.run()
                 Log.d(TAG, "Ring scan flow ended, restarting.")
@@ -375,15 +385,16 @@ class SyncForegroundService : Service() {
 
             val millivolts = manager.readVoltageMillivolts()
             if (millivolts != null) {
-                val volts = millivolts / 1000.0
-                val formatted = "%.2fV".format(volts)
-                _batteryVoltage.value = formatted
+                val formatted = formatBatteryVoltage(millivolts)
+                batteryTracker.reportPendant(PENDANT_DEVICE_KEY, millivolts)
+                    ?.let { _batteryVoltage.value = it }
                 settings.lastBatteryVoltage = formatted
                 Log.d(TAG, "Battery voltage: $formatted ($millivolts mV)")
                 maybePostBatteryLowNotification(millivolts)
             } else {
-                _batteryVoltage.value = "N/A"
-                settings.lastBatteryVoltage = "N/A"
+                batteryTracker.reportUnavailable(PENDANT_DEVICE_KEY)
+                    ?.let { _batteryVoltage.value = it }
+                settings.lastBatteryVoltage = UNKNOWN_BATTERY_VOLTAGE
                 Log.d(TAG, "Voltage characteristic not available.")
             }
 
@@ -559,12 +570,11 @@ class SyncForegroundService : Service() {
         private val _syncState = MutableStateFlow("Idle")
         val syncState: StateFlow<String> = _syncState
 
-        private val _batteryVoltage = MutableStateFlow("N/A")
+        private val _batteryVoltage = MutableStateFlow(UNKNOWN_BATTERY_VOLTAGE)
         val batteryVoltage: StateFlow<String> = _batteryVoltage
 
         // The device type of the loop that is currently running. The recordings
-        // screen hides the pendant status bar while the ring is selected,
-        // because the ring path never updates that text or the battery reading.
+        // screen uses it to label the ring and to pick device-specific copy.
         // Null until the service has started its first loop.
         private val _activeDeviceType = MutableStateFlow<String?>(null)
         val activeDeviceType: StateFlow<String?> = _activeDeviceType
