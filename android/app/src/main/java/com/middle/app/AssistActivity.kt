@@ -9,14 +9,21 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -27,10 +34,15 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.res.colorResource
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import com.middle.app.R
 import com.middle.app.audio.CaptureEndReason
 import com.middle.app.audio.PhoneRecorder
 import com.middle.app.audio.SileroClassifier
@@ -303,55 +315,85 @@ private fun AssistScreen(
     onStop: () -> Unit,
 ) {
     // No fillMaxSize: the window wraps this card, which is what lets a tap
-    // outside the card reach the window and dismiss it.
-    Surface(
-        modifier = Modifier
-            .padding(8.dp)
-            .widthIn(min = 280.dp, max = 360.dp),
-        shape = MaterialTheme.shapes.large,
-        tonalElevation = 3.dp,
-        shadowElevation = 6.dp,
+    // outside the card reach the window and dismiss it. The icon straddles the
+    // top edge, so the card is pushed down by half the icon to keep it in view.
+    val showIcon = state !is AssistState.Listening
+    Box(
+        modifier = Modifier.padding(8.dp),
+        contentAlignment = Alignment.TopCenter,
     ) {
-        Column(
+        Surface(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+                .padding(top = if (showIcon) ICON_SIZE / 2 else 0.dp)
+                .widthIn(min = 280.dp, max = 360.dp),
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 3.dp,
+            shadowElevation = 6.dp,
         ) {
-            when (state) {
-                is AssistState.Listening -> {
-                    Text("Listening…", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = formatElapsed(state.elapsedSeconds),
-                        style = MaterialTheme.typography.displaySmall,
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    OutlinedButton(onClick = onStop) {
-                        Text("Stop")
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+                    .padding(top = if (showIcon) ICON_SIZE / 2 else 0.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                when (state) {
+                    is AssistState.Listening -> {
+                        Text("Listening…", style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = formatElapsed(state.elapsedSeconds),
+                            style = MaterialTheme.typography.displaySmall,
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        OutlinedButton(onClick = onStop) {
+                            Text("Stop")
+                        }
                     }
-                }
-                AssistState.Transcribing -> Text(
-                    text = "Transcribing…",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                is AssistState.Transcript -> {
-                    Text("Transcript", style = MaterialTheme.typography.titleMedium)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = state.text,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .heightIn(max = TRANSCRIPT_MAX_HEIGHT)
-                            .verticalScroll(rememberScrollState()),
+                    AssistState.Transcribing -> Text(
+                        text = "Transcribing…",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    is AssistState.Transcript -> {
+                        Text("Transcript", style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = state.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier
+                                .heightIn(max = TRANSCRIPT_MAX_HEIGHT)
+                                .verticalScroll(rememberScrollState()),
+                        )
+                    }
+                    is AssistState.Done -> Text(
+                        text = state.message,
+                        style = MaterialTheme.typography.titleMedium,
                     )
                 }
-                is AssistState.Done -> Text(
-                    text = state.message,
-                    style = MaterialTheme.typography.titleMedium,
-                )
             }
         }
+        if (showIcon) {
+            MiddleIcon()
+        }
+    }
+}
+
+@Composable
+private fun MiddleIcon() {
+    Box(
+        modifier = Modifier
+            .size(ICON_SIZE)
+            .shadow(2.dp, CircleShape)
+            .clip(CircleShape)
+            .background(colorResource(R.color.ic_launcher_background))
+            .border(2.dp, MaterialTheme.colorScheme.surface, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_launcher_foreground),
+            contentDescription = null,
+            modifier = Modifier.fillMaxSize(),
+        )
     }
 }
 
@@ -363,3 +405,5 @@ private fun formatElapsed(seconds: Int): String {
 
 // Keeps a long transcript from growing the card beyond the screen.
 private val TRANSCRIPT_MAX_HEIGHT = 280.dp
+
+private val ICON_SIZE = 64.dp
