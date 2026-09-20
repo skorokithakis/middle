@@ -12,16 +12,16 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -315,17 +315,17 @@ private fun AssistScreen(
     onStop: () -> Unit,
 ) {
     // No fillMaxSize: the window wraps this card, which is what lets a tap
-    // outside the card reach the window and dismiss it. The icon straddles the
-    // top edge, so the card is pushed down by half the icon to keep it in view.
-    val showIcon = state !is AssistState.Listening
+    // outside the card reach the window and dismiss it. The card is a fixed
+    // size so only its content changes between states; the icon always
+    // straddles the top edge, and short content stays centred in the fixed area.
     Box(
         modifier = Modifier.padding(8.dp),
         contentAlignment = Alignment.TopCenter,
     ) {
         Surface(
             modifier = Modifier
-                .padding(top = if (showIcon) ICON_SIZE / 2 else 0.dp)
-                .widthIn(min = 280.dp, max = 360.dp),
+                .padding(top = ICON_SIZE / 2)
+                .width(CARD_WIDTH),
             shape = MaterialTheme.shapes.large,
             tonalElevation = 3.dp,
             shadowElevation = 6.dp,
@@ -334,8 +334,10 @@ private fun AssistScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(24.dp)
-                    .padding(top = if (showIcon) ICON_SIZE / 2 else 0.dp),
+                    .padding(top = ICON_SIZE / 2)
+                    .height(CONTENT_HEIGHT),
                 horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
             ) {
                 when (state) {
                     is AssistState.Listening -> {
@@ -360,9 +362,7 @@ private fun AssistScreen(
                         Text(
                             text = state.text,
                             style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier
-                                .heightIn(max = TRANSCRIPT_MAX_HEIGHT)
-                                .verticalScroll(rememberScrollState()),
+                            modifier = Modifier.verticalScroll(rememberScrollState()),
                         )
                     }
                     is AssistState.Done -> Text(
@@ -372,9 +372,7 @@ private fun AssistScreen(
                 }
             }
         }
-        if (showIcon) {
-            MiddleIcon()
-        }
+        MiddleIcon()
     }
 }
 
@@ -403,7 +401,8 @@ private fun formatElapsed(seconds: Int): String {
     return "%d:%02d".format(minutes, remainingSeconds)
 }
 
-// Keeps a long transcript from growing the card beyond the screen.
-private val TRANSCRIPT_MAX_HEIGHT = 280.dp
+// The card never changes size between states, so only its content swaps.
+private val CARD_WIDTH = 320.dp
+private val CONTENT_HEIGHT = 200.dp
 
 private val ICON_SIZE = 64.dp
