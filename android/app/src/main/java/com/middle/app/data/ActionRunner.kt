@@ -196,16 +196,13 @@ class ActionRunner(context: Context) {
 
     /**
      * Hands a fake call to Telecom so the system dialer shows its own
-     * incoming-call screen. The account must be registered and enabled by the
-     * user first; a missing overlay permission is not needed for this path.
+     * incoming-call screen. The account must be enabled by the user once; the
+     * enabled state cannot be read without a phone permission, so the call is
+     * attempted and a [SecurityException] means it is not enabled. A missing
+     * overlay permission is not needed for this path.
      */
     private fun runFakeCall(action: Action): Boolean {
         FakeCallAccount.register(appContext)
-        if (!FakeCallAccount.isEnabled(appContext)) {
-            Log.w(TAG, "[action] fake call action matched but the Middle calling account is disabled")
-            postInfoNotification(appContext.getString(R.string.fake_call_account_disabled_notification_text))
-            return false
-        }
         val telecomManager = appContext.getSystemService(TelecomManager::class.java)
         if (telecomManager == null) {
             Log.w(TAG, "[action] fake call action matched but Telecom is unavailable")
@@ -223,8 +220,8 @@ class ActionRunner(context: Context) {
             telecomManager.addNewIncomingCall(FakeCallAccount.handle(appContext), extras)
             true
         } catch (exception: SecurityException) {
-            // The account can be disabled between the enabled check above and
-            // the call, which Telecom reports as a SecurityException.
+            // The account not being registered or enabled is the only failure
+            // Telecom reports this way; there is no permission-free check.
             Log.w(TAG, "[action] fake call refused; the Middle calling account may be disabled", exception)
             postInfoNotification(appContext.getString(R.string.fake_call_account_disabled_notification_text))
             false

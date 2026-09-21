@@ -15,6 +15,15 @@ import com.middle.app.R
  * raises fake calls against. The account is registered with Telecom but stays
  * disabled until the user enables it once in the system Calling accounts
  * settings.
+ *
+ * The enabled state is never read. [TelecomManager.getPhoneAccount] requires
+ * READ_PHONE_NUMBERS for a non-dialer app targeting API 31+ (Telecom's
+ * ENABLE_GET_PHONE_ACCOUNT_PERMISSION_PROTECTION compat change), even for
+ * Middle's own account, and [TelecomManager.getCallCapablePhoneAccounts] needs
+ * READ_PHONE_STATE. There is no permission-free way to read it and no runtime
+ * phone permission is wanted, so the only signal is the [SecurityException]
+ * [TelecomManager.addNewIncomingCall] throws while the account is not
+ * registered/enabled.
  */
 object FakeCallAccount {
 
@@ -39,12 +48,6 @@ object FakeCallAccount {
             .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
             .build()
         manager.registerPhoneAccount(account)
-    }
-
-    /** True when the user has enabled Middle's account in Calling accounts. */
-    fun isEnabled(context: Context): Boolean {
-        val manager = context.getSystemService(TelecomManager::class.java) ?: return false
-        return manager.getPhoneAccount(handle(context))?.isEnabled == true
     }
 
     /**

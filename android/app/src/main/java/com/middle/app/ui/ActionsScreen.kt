@@ -99,7 +99,6 @@ fun ActionsScreen(
     // resume makes the warning disappear as soon as they come back.
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var canUseCalendar by remember { mutableStateOf(hasCalendarPermissions(context)) }
-    var callingAccountEnabled by remember { mutableStateOf(FakeCallAccount.isEnabled(context)) }
     var showCalendarPicker by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
     // The id of the fake-call action the contact picker was opened for; null
@@ -110,10 +109,6 @@ fun ActionsScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 canDrawOverlays = Settings.canDrawOverlays(context)
                 canUseCalendar = hasCalendarPermissions(context)
-                // Register before checking so the toggle already exists if the
-                // user is sent to the system Calling accounts screen.
-                FakeCallAccount.register(context)
-                callingAccountEnabled = FakeCallAccount.isEnabled(context)
                 viewModel.refresh()
             }
         }
@@ -216,16 +211,6 @@ fun ActionsScreen(
                                 Uri.parse("package:${context.packageName}"),
                             ),
                         )
-                    },
-                )
-            }
-            if (!callingAccountEnabled) {
-                FakeCallAccountCard(
-                    onOpenSettings = {
-                        // Register first so the Middle toggle exists on the
-                        // screen the intent opens.
-                        FakeCallAccount.register(context)
-                        FakeCallAccount.openSettings(context)
                     },
                 )
             }
@@ -341,26 +326,6 @@ private fun OverlayPermissionCard(onGrant: () -> Unit) {
 }
 
 @Composable
-private fun FakeCallAccountCard(onOpenSettings: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = stringResource(R.string.actions_fake_call_account_message),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            OutlinedButton(onClick = onOpenSettings) {
-                Text(stringResource(R.string.actions_fake_call_account_enable))
-            }
-        }
-    }
-}
-
-@Composable
 private fun CalendarRow(selectedName: String?, onClick: () -> Unit) {
     Card(
         modifier = Modifier
@@ -446,6 +411,7 @@ private fun ActionCard(
     onMoveDown: () -> Unit,
     onChooseContact: () -> Unit,
 ) {
+    val context = LocalContext.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -544,6 +510,23 @@ private fun ActionCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 OutlinedButton(onClick = onChooseContact) {
                     Text(stringResource(R.string.actions_fake_call_choose_contact))
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.actions_fake_call_account_message),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        // Register first so the Middle toggle exists on the
+                        // screen the intent opens.
+                        FakeCallAccount.register(context)
+                        FakeCallAccount.openSettings(context)
+                    },
+                ) {
+                    Text(stringResource(R.string.actions_fake_call_account_open))
                 }
             }
         }

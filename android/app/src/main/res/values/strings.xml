@@ -40,8 +40,8 @@
     <string name="actions_fake_call_choose_contact">Choose contact</string>
     <string name="actions_overlay_message">Alarms need the \"Display over other apps\" permission to be set hands-free.</string>
     <string name="actions_overlay_grant">Allow</string>
-    <string name="actions_fake_call_account_message">Fake calls need Middle enabled in the system Calling accounts settings.</string>
-    <string name="actions_fake_call_account_enable">Open settings</string>
+    <string name="actions_fake_call_account_message">The call rings only after Middle is switched on under the phone app\'s Calling accounts.</string>
+    <string name="actions_fake_call_account_open">Open calling accounts</string>
     <string name="actions_calendar_label">Calendar for reminders</string>
     <string name="actions_calendar_none">None</string>
     <string name="actions_calendar_dialog_title">Choose calendar</string>
