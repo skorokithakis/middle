@@ -91,6 +91,18 @@
             android:foregroundServiceType="connectedDevice"
             android:exported="false" />
 
+        <!-- Managed calling account whose connection service Telecom binds to
+             raise fake incoming calls. The system permission keeps the exported
+             service bindable only by Telecom. -->
+        <service
+            android:name=".telecom.FakeCallConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".BootReceiver"
             android:exported="true">

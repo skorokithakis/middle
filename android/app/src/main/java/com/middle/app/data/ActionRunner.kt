@@ -9,14 +9,18 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Bundle
 import android.provider.AlarmClock
 import android.provider.CalendarContract
+import android.telecom.TelecomManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.middle.app.MainActivity
 import com.middle.app.MiddleApplication
 import com.middle.app.R
+import com.middle.app.telecom.FakeCallAccount
 import com.middle.app.transcription.CommandKind
 import com.middle.app.transcription.ParsedCommand
 import com.middle.app.transcription.TimeParseClient
@@ -29,7 +33,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Executes an ALARM or CALENDAR [ActionHit] against the system.
+ * Executes an ALARM, CALENDAR or FAKE_CALL [ActionHit] against the system.
  *
  * [run] blocks while it calls the time parser and writes to a provider, so the
  * caller runs it on [kotlinx.coroutines.Dispatchers.IO]. It returns true only
@@ -71,6 +75,7 @@ class ActionRunner(context: Context) {
                 }
             }
             ActionType.WEBHOOK -> false
+            ActionType.FAKE_CALL -> runFakeCall(hit.action)
         }
     }
 
@@ -185,6 +190,43 @@ class ActionRunner(context: Context) {
             // revoked between the check above and the insert.
             Log.e(TAG, "[action] could not add a calendar event", exception)
             postInfoNotification(appContext.getString(R.string.calendar_could_not_add_notification_text))
+            false
+        }
+    }
+
+    /**
+     * Hands a fake call to Telecom so the system dialer shows its own
+     * incoming-call screen. The account must be registered and enabled by the
+     * user first; a missing overlay permission is not needed for this path.
+     */
+    private fun runFakeCall(action: Action): Boolean {
+        FakeCallAccount.register(appContext)
+        if (!FakeCallAccount.isEnabled(appContext)) {
+            Log.w(TAG, "[action] fake call action matched but the Middle calling account is disabled")
+            postInfoNotification(appContext.getString(R.string.fake_call_account_disabled_notification_text))
+            return false
+        }
+        val telecomManager = appContext.getSystemService(TelecomManager::class.java)
+        if (telecomManager == null) {
+            Log.w(TAG, "[action] fake call action matched but Telecom is unavailable")
+            postInfoNotification(appContext.getString(R.string.fake_call_account_disabled_notification_text))
+            return false
+        }
+        val extras = Bundle().apply {
+            putParcelable(
+                TelecomManager.EXTRA_INCOMING_CALL_ADDRESS,
+                Uri.fromParts("tel", action.callerNumber.trim(), null),
+            )
+            putString(FakeCallAccount.EXTRA_CALLER_NAME, action.callerName)
+        }
+        return try {
+            telecomManager.addNewIncomingCall(FakeCallAccount.handle(appContext), extras)
+            true
+        } catch (exception: SecurityException) {
+            // The account can be disabled between the enabled check above and
+            // the call, which Telecom reports as a SecurityException.
+            Log.w(TAG, "[action] fake call refused; the Middle calling account may be disabled", exception)
+            postInfoNotification(appContext.getString(R.string.fake_call_account_disabled_notification_text))
             false
         }
     }

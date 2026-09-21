@@ -143,6 +143,32 @@ class ActionTest {
     }
 
     @Test
+    fun fakeCallRoundTripsThroughJson() {
+        val action = Action(
+            id = "a4",
+            enabled = true,
+            type = ActionType.FAKE_CALL,
+            pattern = Action.DEFAULT_FAKE_CALL_PATTERN,
+            stop = true,
+            callerName = "Ada Lovelace",
+            callerNumber = "+15551234567",
+        )
+        assertEquals(listOf(action), Action.fromJson(Action.toJson(listOf(action))))
+    }
+
+    @Test
+    fun absentCallerFieldsReadAsEmptyDefaults() {
+        val json = """
+            [
+              {"id":"a1","enabled":true,"type":"FAKE_CALL","pattern":"x","stop":true}
+            ]
+        """.trimIndent()
+        val action = Action.fromJson(json).single()
+        assertEquals("", action.callerName)
+        assertEquals("", action.callerNumber)
+    }
+
+    @Test
     fun parseJsonOrNullReturnsNullForNonArrayAndSkipsBadEntries() {
         assertNull(Action.parseJsonOrNull("not json"))
         assertNull(Action.parseJsonOrNull("""{"actions":[]}"""))

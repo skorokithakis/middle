@@ -29,13 +29,19 @@
     <string name="actions_type_alarm">Alarm</string>
     <string name="actions_type_calendar">Reminder</string>
     <string name="actions_type_webhook">Webhook</string>
+    <string name="actions_type_fake_call">Fake call</string>
     <string name="actions_pattern_label">Pattern</string>
     <string name="actions_stop">Stop after this action</string>
     <string name="actions_webhook_url_label">Webhook URL</string>
     <string name="actions_webhook_body_label">Body template</string>
     <string name="actions_webhook_body_helper">Variables: $transcript and $rest</string>
+    <string name="actions_fake_call_caller_name_label">Caller name</string>
+    <string name="actions_fake_call_caller_number_label">Caller number</string>
+    <string name="actions_fake_call_choose_contact">Choose contact</string>
     <string name="actions_overlay_message">Alarms need the \"Display over other apps\" permission to be set hands-free.</string>
     <string name="actions_overlay_grant">Allow</string>
+    <string name="actions_fake_call_account_message">Fake calls need Middle enabled in the system Calling accounts settings.</string>
+    <string name="actions_fake_call_account_enable">Open settings</string>
     <string name="actions_calendar_label">Calendar for reminders</string>
     <string name="actions_calendar_none">None</string>
     <string name="actions_calendar_dialog_title">Choose calendar</string>
@@ -49,6 +55,7 @@
     <string name="alarm_tap_notification_text">Tap to set alarm for %1$s</string>
     <string name="alarm_could_not_set_notification_text">Could not set alarm</string>
     <string name="calendar_none_notification_text">Choose a calendar in Actions to add reminders</string>
+    <string name="fake_call_account_disabled_notification_text">Enable Middle in Calling accounts to make fake calls</string>
     <string name="calendar_default_title">Middle reminder</string>
     <string name="calendar_added_notification_text">Reminder added: %1$s, %2$s</string>
     <string name="calendar_added_all_day_notification_text">Reminder added: %1$s, %2$s all day</string>

@@ -9,6 +9,7 @@ enum class ActionType {
     ALARM,
     CALENDAR,
     WEBHOOK,
+    FAKE_CALL,
 }
 
 /**
@@ -24,6 +25,8 @@ data class Action(
     val stop: Boolean,
     val webhookUrl: String = "",
     val webhookBodyTemplate: String = "",
+    val callerName: String = "",
+    val callerNumber: String = "",
 ) {
     private fun toJsonObject(): JSONObject = JSONObject().apply {
         put(FIELD_ID, id)
@@ -33,6 +36,8 @@ data class Action(
         put(FIELD_STOP, stop)
         put(FIELD_WEBHOOK_URL, webhookUrl)
         put(FIELD_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
+        put(FIELD_CALLER_NAME, callerName)
+        put(FIELD_CALLER_NUMBER, callerNumber)
     }
 
     companion object {
@@ -41,6 +46,7 @@ data class Action(
         const val DEFAULT_ALARM_PATTERN = """\bset (an? )?alarm (for|at)\b"""
         const val DEFAULT_CALENDAR_PATTERN = """\b(remind me|add (an? )?(appointment|event))\b"""
         const val DEFAULT_WEBHOOK_PATTERN = ".*"
+        const val DEFAULT_FAKE_CALL_PATTERN = """\bfake call\b"""
 
         private const val TAG = "Action"
         private const val FIELD_ID = "id"
@@ -53,6 +59,8 @@ data class Action(
         private const val FIELD_LEGACY_SUPPRESS_WEBHOOK = "suppressWebhook"
         private const val FIELD_WEBHOOK_URL = "webhookUrl"
         private const val FIELD_WEBHOOK_BODY_TEMPLATE = "webhookBodyTemplate"
+        private const val FIELD_CALLER_NAME = "callerName"
+        private const val FIELD_CALLER_NUMBER = "callerNumber"
 
         fun toJson(actions: List<Action>): String =
             JSONArray().apply { actions.forEach { put(it.toJsonObject()) } }.toString()
@@ -105,8 +113,11 @@ data class Action(
             val webhookUrl = if (json.has(FIELD_WEBHOOK_URL)) json.opt(FIELD_WEBHOOK_URL) else ""
             val webhookBodyTemplate =
                 if (json.has(FIELD_WEBHOOK_BODY_TEMPLATE)) json.opt(FIELD_WEBHOOK_BODY_TEMPLATE) else ""
+            val callerName = if (json.has(FIELD_CALLER_NAME)) json.opt(FIELD_CALLER_NAME) else ""
+            val callerNumber = if (json.has(FIELD_CALLER_NUMBER)) json.opt(FIELD_CALLER_NUMBER) else ""
             if (enabled !is Boolean || pattern !is String || stop !is Boolean ||
-                webhookUrl !is String || webhookBodyTemplate !is String
+                webhookUrl !is String || webhookBodyTemplate !is String ||
+                callerName !is String || callerNumber !is String
             ) {
                 Log.w(TAG, "Skipping action $id: malformed field")
                 return null
@@ -119,6 +130,8 @@ data class Action(
                 stop = stop,
                 webhookUrl = webhookUrl,
                 webhookBodyTemplate = webhookBodyTemplate,
+                callerName = callerName,
+                callerNumber = callerNumber,
             )
         }
     }

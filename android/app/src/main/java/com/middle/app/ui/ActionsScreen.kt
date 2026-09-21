@@ -1,11 +1,14 @@
 package com.middle.app.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.provider.ContactsContract
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -51,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,9 +68,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.middle.app.R
 import com.middle.app.data.Action
 import com.middle.app.data.ActionType
+import com.middle.app.telecom.FakeCallAccount
 import com.middle.app.viewmodel.ActionsViewModel
 import com.middle.app.viewmodel.CalendarInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private const val TAG = "ActionsScreen"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -90,13 +99,21 @@ fun ActionsScreen(
     // resume makes the warning disappear as soon as they come back.
     var canDrawOverlays by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
     var canUseCalendar by remember { mutableStateOf(hasCalendarPermissions(context)) }
+    var callingAccountEnabled by remember { mutableStateOf(FakeCallAccount.isEnabled(context)) }
     var showCalendarPicker by remember { mutableStateOf(false) }
     var showAddMenu by remember { mutableStateOf(false) }
+    // The id of the fake-call action the contact picker was opened for; null
+    // while no pick is in flight.
+    var pendingContactActionId by rememberSaveable { mutableStateOf<String?>(null) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 canDrawOverlays = Settings.canDrawOverlays(context)
                 canUseCalendar = hasCalendarPermissions(context)
+                // Register before checking so the toggle already exists if the
+                // user is sent to the system Calling accounts screen.
+                FakeCallAccount.register(context)
+                callingAccountEnabled = FakeCallAccount.isEnabled(context)
                 viewModel.refresh()
             }
         }
@@ -117,6 +134,33 @@ fun ActionsScreen(
                 showCalendarPicker = true
             }
         }
+    }
+
+    // The picker result carries a temporary read grant for the one picked row,
+    // so no READ_CONTACTS permission is needed. A cancelled pick has no data
+    // URI and is ignored; the row query runs off the main thread because the
+    // contacts provider is a separate process.
+    val contactPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val actionId = pendingContactActionId
+        pendingContactActionId = null
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        scope.launch {
+            val contact = withContext(Dispatchers.IO) { readContact(context, uri) }
+                ?: return@launch
+            val action = viewModel.actions.value.firstOrNull { it.id == actionId } ?: return@launch
+            viewModel.updateAction(
+                action.copy(callerName = contact.first, callerNumber = contact.second),
+            )
+        }
+    }
+    val chooseContact: (String) -> Unit = { actionId ->
+        pendingContactActionId = actionId
+        contactPickerLauncher.launch(
+            Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI),
+        )
     }
 
     Scaffold(
@@ -175,6 +219,16 @@ fun ActionsScreen(
                     },
                 )
             }
+            if (!callingAccountEnabled) {
+                FakeCallAccountCard(
+                    onOpenSettings = {
+                        // Register first so the Middle toggle exists on the
+                        // screen the intent opens.
+                        FakeCallAccount.register(context)
+                        FakeCallAccount.openSettings(context)
+                    },
+                )
+            }
             CalendarRow(
                 selectedName = selectedCalendarName,
                 onClick = {
@@ -203,6 +257,7 @@ fun ActionsScreen(
                         onDelete = { viewModel.deleteAction(action.id) },
                         onMoveUp = { viewModel.moveUp(action.id) },
                         onMoveDown = { viewModel.moveDown(action.id) },
+                        onChooseContact = { chooseContact(action.id) },
                     )
                 }
             }
@@ -228,13 +283,42 @@ private fun hasCalendarPermissions(context: Context): Boolean =
         PackageManager.PERMISSION_GRANTED
 
 @Composable
-private fun actionTypeLabel(type: ActionType): String = stringResource(
-    when (type) {
-        ActionType.ALARM -> R.string.actions_type_alarm
-        ActionType.CALENDAR -> R.string.actions_type_calendar
-        ActionType.WEBHOOK -> R.string.actions_type_webhook
-    },
-)
+private fun actionTypeLabel(type: ActionType): String = when (type) {
+    ActionType.ALARM -> stringResource(R.string.actions_type_alarm)
+    ActionType.CALENDAR -> stringResource(R.string.actions_type_calendar)
+    ActionType.WEBHOOK -> stringResource(R.string.actions_type_webhook)
+    ActionType.FAKE_CALL -> stringResource(R.string.actions_type_fake_call)
+}
+
+/** Reads the name and number of the single row the contact picker returned. */
+private fun readContact(context: Context, uri: Uri): Pair<String, String>? =
+    try {
+        context.contentResolver.query(
+            uri,
+            arrayOf(
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                ContactsContract.CommonDataKinds.Phone.NUMBER,
+            ),
+            null,
+            null,
+            null,
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val name = cursor.getString(
+                    cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME),
+                ) ?: ""
+                val number = cursor.getString(
+                    cursor.getColumnIndexOrThrow(ContactsContract.CommonDataKinds.Phone.NUMBER),
+                ) ?: ""
+                name to number
+            } else {
+                null
+            }
+        }
+    } catch (exception: Exception) {
+        Log.w(TAG, "Could not read the picked contact: $exception")
+        null
+    }
 
 @Composable
 private fun OverlayPermissionCard(onGrant: () -> Unit) {
@@ -251,6 +335,26 @@ private fun OverlayPermissionCard(onGrant: () -> Unit) {
             Spacer(modifier = Modifier.height(8.dp))
             OutlinedButton(onClick = onGrant) {
                 Text(stringResource(R.string.actions_overlay_grant))
+            }
+        }
+    }
+}
+
+@Composable
+private fun FakeCallAccountCard(onOpenSettings: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                text = stringResource(R.string.actions_fake_call_account_message),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(onClick = onOpenSettings) {
+                Text(stringResource(R.string.actions_fake_call_account_enable))
             }
         }
     }
@@ -340,6 +444,7 @@ private fun ActionCard(
     onDelete: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
+    onChooseContact: () -> Unit,
 ) {
     Card(
         modifier = Modifier
@@ -418,6 +523,28 @@ private fun ActionCard(
                     label = { Text(stringResource(R.string.actions_webhook_body_label)) },
                     supportingText = { Text(stringResource(R.string.actions_webhook_body_helper)) },
                 )
+            }
+            if (action.type == ActionType.FAKE_CALL) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = action.callerName,
+                    onValueChange = { onUpdate(action.copy(callerName = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.actions_fake_call_caller_name_label)) },
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = action.callerNumber,
+                    onValueChange = { onUpdate(action.copy(callerNumber = it)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.actions_fake_call_caller_number_label)) },
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(onClick = onChooseContact) {
+                    Text(stringResource(R.string.actions_fake_call_choose_contact))
+                }
             }
         }
     }

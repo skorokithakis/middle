@@ -22,9 +22,9 @@ middle/
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
 │       ├── data/         # Recordings, actions, webhook client, pipeline queue, settings
-│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK enum; list persisted as one JSON array string
+│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL enum; list persisted as one JSON array string
 │       │   ├── ActionMatcher.kt        # Pure ordered pattern/rest rules, no time parsing (unit tested)
-│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR hits: time-parse, clock app or calendar write
+│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL hits: time-parse, clock app, calendar write or Telecom fake call
 │       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs; runs the action phase after a transcription
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
@@ -33,6 +33,9 @@ middle/
 │       │   ├── Settings.kt             # EncryptedSharedPreferences wrapper (keys, toggles, calendar, actions, device); migrates the legacy webhook; version 2 JSON backup
 │       │   ├── WebhookClient.kt        # OkHttp POST, Basic Auth from URL credentials, $transcript/$rest body substitution
 │       │   └── WebhookLog.kt           # In-memory StateFlow log (max 50 entries) for the UI
+│       ├── telecom/      # Fake incoming calls handed to Android Telecom
+│       │   ├── FakeCallAccount.kt      # PhoneAccount handle/registration/enabled check + Calling accounts settings opener
+│       │   └── FakeCallConnectionService.kt # Managed ConnectionService: rings, answers, rejects, 45 s missed timeout
 │       ├── audio/        # IMA ADPCM decoder, audio encoder, phone mic capture and VAD
 │       │   ├── ImaAdpcmDecoder.kt      # Pure-Kotlin ADPCM decoder (mirrors firmware exactly)
 │       │   ├── PhoneRecorder.kt        # AudioRecord mic capture → PCM16, 5-minute cap, optional endpointer
@@ -44,13 +47,13 @@ middle/
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
-│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook, reorder/delete; calendar picker and overlay card
+│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call, reorder/delete; contact picker, calendar picker and overlay/calling-account cards
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
 │       │   ├── SettingsScreen.kt       # Provider/API key, toggles, sync device and ring picker, settings backup export/import
 │       │   ├── LogScreen.kt            # Pipeline and webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
-│       │   ├── ActionsViewModel.kt     # Reads/writes the ordered action list; adds by type, moves, lists calendars for the picker
+│       │   ├── ActionsViewModel.kt     # Reads/writes the ordered action list; adds by type with its default pattern, moves, lists calendars for the picker
 │       │   ├── RecordingsViewModel.kt  # Playback (MediaPlayer), delete, manual pipeline retry
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
@@ -150,7 +153,7 @@ INMP441 (I2S, 32-bit stereo) → left channel >> 16 → int16 PCM
   → signed 16-bit PCM
   → MP3 (lameenc, sync.py) or AAC/M4A (MediaCodec, Android)
   → optional transcription (OpenAI gpt-4o-transcribe)
-  → optional actions (ActionMatcher → ActionRunner: clock app or calendar event)
+  → optional actions (ActionMatcher → ActionRunner: clock app, calendar event or fake call)
   → optional per-action webhook delivery (POST with a JSON body template, $transcript/$rest)
 ```
 
@@ -214,11 +217,12 @@ Key details:
 
 Actions are user-defined rules that run once against a transcript after it is
 produced, before any webhook delivery. `Action.kt` is the data class and the
-`ALARM`/`CALENDAR`/`WEBHOOK` enum, `ActionMatcher.kt` holds the pure ordered
-matching rules (unit-tested by `ActionMatcherTest.kt`; `ActionTest.kt` covers
-JSON parsing and round-tripping), `ActionRunner.kt` performs the ALARM/CALENDAR
-side effects (unit-tested by `ActionRunnerTest.kt`), and `TimeParseClient.kt`
-asks the model for a time (unit-tested by `TimeParseClientTest.kt`).
+`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL` enum, `ActionMatcher.kt` holds the pure
+ordered matching rules (unit-tested by `ActionMatcherTest.kt`; `ActionTest.kt`
+covers JSON parsing and round-tripping), `ActionRunner.kt` performs the
+ALARM/CALENDAR/FAKE_CALL side effects (unit-tested by `ActionRunnerTest.kt`),
+and `TimeParseClient.kt` asks the model for a time (unit-tested by
+`TimeParseClientTest.kt`).
 
 Key details:
 - The whole list is one JSON array string under a single `Settings` key
@@ -228,7 +232,9 @@ Key details:
 - Every action has a case-insensitive regex `pattern`, an `enabled` flag and a
   `stop` flag. `WEBHOOK` actions also carry `webhookUrl` and
   `webhookBodyTemplate`; `$rest` is the transcript after that pattern's match,
-  trimmed (empty for the `.*` catch-all).
+  trimmed (empty for the `.*` catch-all). `FAKE_CALL` actions also carry the
+  caller `callerName` and `callerNumber` (both serialized always and read as
+  empty when absent).
 - Evaluation happens exactly once, in
   `PipelineQueue.advanceAfterTranscription()` on the only successful
   transcription of a recording, on the IO dispatcher. `ActionMatcher.plan()`
@@ -259,6 +265,19 @@ Key details:
   all-day event sets `ALL_DAY=1`, timezone `UTC`, and spans UTC midnight of the
   date to UTC midnight of the next date; the parsed time of day is ignored. A
   missing or failed reminder row is logged but does not fail the event.
+- A FAKE_CALL hands the call to Android Telecom through Middle's managed
+  calling account (`telecom/FakeCallAccount.kt` and
+  `telecom/FakeCallConnectionService.kt`, declared in `AndroidManifest.xml` with
+  `BIND_TELECOM_CONNECTION_SERVICE`). The account is registered with
+  `CAPABILITY_CALL_PROVIDER` and stays disabled until the user enables it once
+  in the system Calling accounts settings; while it is disabled the action logs,
+  posts an info notification and produces nothing, and a `SecurityException`
+  (the account was disabled in between) counts as the same failure. Otherwise
+  `TelecomManager.addNewIncomingCall` is called with the `tel:` address from
+  `callerNumber` and the caller name in a custom extra, and the system dialer
+  shows its own incoming-call screen with the user's ringtone and DND rules. No
+  overlay permission is needed. The connection rings for 45 s, then disconnects
+  as missed; answering activates it, rejecting or disconnecting ends it.
 - The clock app is only started when the app can draw overlays. Without
   `SYSTEM_ALERT_WINDOW` the alarm is posted as a notification the user taps;
   `ActionsScreen.kt` shows a card to grant it. The alarm intent needs
@@ -353,7 +372,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. A header card always shows the selected device's sync status (a fixed `Index` label for the ring) and its battery voltage. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
-| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields. Top bar adds an alarm, reminder or webhook action. A calendar row picks the calendar for reminders, and an overlay-permission card is shown when the permission is missing. |
+| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields and a contact picker. Top bar adds an alarm, reminder, webhook or fake-call action. A calendar row picks the calendar for reminders, and cards are shown when the overlay permission is missing or the Middle calling account is disabled. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
 | Assistant | `ASSIST` / `VOICE_COMMAND` | Not a nav route: a dialog-style card shown when the system assistant is triggered (long-press power). Shows "Listening…" and elapsed time with a Stop button; Silero VAD ends the recording when the speaker stops, then it saves through the same pipeline. Has no launcher icon and is excluded from recents. |
