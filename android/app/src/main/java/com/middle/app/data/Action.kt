@@ -38,6 +38,9 @@ data class Action(
     val callerNumber: String = "",
     // The fake call speaks this; blank means a silent call.
     val message: String = "",
+    // Engine voice the fake call's message is spoken with; blank means the
+    // engine's default voice.
+    val voiceName: String = "",
     val mediaKey: MediaKey = MediaKey.PLAY_PAUSE,
 ) {
     private fun toJsonObject(): JSONObject = JSONObject().apply {
@@ -51,6 +54,7 @@ data class Action(
         put(FIELD_CALLER_NAME, callerName)
         put(FIELD_CALLER_NUMBER, callerNumber)
         put(FIELD_MESSAGE, message)
+        put(FIELD_VOICE_NAME, voiceName)
         put(FIELD_MEDIA_KEY, mediaKey.name)
     }
 
@@ -88,6 +92,7 @@ data class Action(
         private const val FIELD_CALLER_NAME = "callerName"
         private const val FIELD_CALLER_NUMBER = "callerNumber"
         private const val FIELD_MESSAGE = "message"
+        private const val FIELD_VOICE_NAME = "voiceName"
         private const val FIELD_MEDIA_KEY = "mediaKey"
 
         fun toJson(actions: List<Action>): String =
@@ -186,9 +191,11 @@ data class Action(
             val callerName = if (json.has(FIELD_CALLER_NAME)) json.opt(FIELD_CALLER_NAME) else ""
             val callerNumber = if (json.has(FIELD_CALLER_NUMBER)) json.opt(FIELD_CALLER_NUMBER) else ""
             val message = if (json.has(FIELD_MESSAGE)) json.opt(FIELD_MESSAGE) else ""
+            val voiceName = if (json.has(FIELD_VOICE_NAME)) json.opt(FIELD_VOICE_NAME) else ""
             if (enabled !is Boolean || pattern !is String || stop !is Boolean ||
                 webhookUrl !is String || webhookBodyTemplate !is String ||
-                callerName !is String || callerNumber !is String || message !is String
+                callerName !is String || callerNumber !is String || message !is String ||
+                voiceName !is String
             ) {
                 Log.w(TAG, "Skipping action $id: malformed field")
                 return null
@@ -220,6 +227,7 @@ data class Action(
                 callerName = callerName,
                 callerNumber = callerNumber,
                 message = message,
+                voiceName = voiceName,
                 mediaKey = mediaKey,
             )
         }

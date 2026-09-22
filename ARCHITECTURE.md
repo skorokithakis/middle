@@ -49,7 +49,8 @@ middle/
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
-│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call/play-media, reorder/delete; contact picker, calendar picker and overlay-permission card
+│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call (voice picker and preview)/play-media, reorder/delete; contact picker, calendar picker and overlay-permission card
+│       │   ├── FakeCallVoice.kt        # Screen-scoped TextToSpeech listing the installed voices and previewing a fake call's message
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
 │       │   ├── SettingsScreen.kt       # Provider/API key, Spotify Client ID/Secret, toggles, sync device and ring picker, settings backup export/import
 │       │   ├── LogScreen.kt            # Pipeline and webhook delivery log (monospace, error-coloured)
@@ -243,8 +244,9 @@ Key details:
   `stop` flag. `WEBHOOK` actions also carry `webhookUrl` and
   `webhookBodyTemplate`; `$rest` is the transcript after that pattern's match,
   trimmed (empty for the `.*` catch-all). `FAKE_CALL` actions also carry the
-  caller `callerName`, `callerNumber` and the spoken `message` (all serialized
-  always and read as empty when absent). `PLAY_MEDIA` actions carry no extra
+  caller `callerName`, `callerNumber`, the spoken `message` and the `voiceName`
+  (all serialized always and read as empty when absent); a blank `voiceName`
+  means the engine's default voice. `PLAY_MEDIA` actions carry no extra
   fields: their query is
   `$rest`. Its default pattern is `^play\b`, anchored at the start so a normal
   note like "I will play tennis" does not fire.
@@ -297,12 +299,19 @@ Key details:
 - An answered FAKE_CALL speaks its `message` through `android.speech.tts.TextToSpeech`
   as call audio. The engine is created when the connection starts ringing (so it
   is initialised by the time the user answers) and is set to
-  `USAGE_VOICE_COMMUNICATION`/`CONTENT_TYPE_SPEECH`. On answer, after a 1 s
+  `USAGE_VOICE_COMMUNICATION`/`CONTENT_TYPE_SPEECH`. The action's `voiceName` is
+  selected when the engine lists it; a blank name keeps the engine default, and
+  an unknown name (the voice was uninstalled after the action was saved) is
+  logged and also keeps the default. On answer, after a 1 s
   delay, the message's non-blank lines are queued in order with a 2 s silent
   pause after each (4 s after the last), and the final pause's completion queues
   the next cycle, so it repeats until the call ends. A blank message or a failed
   TTS init stays silent and is logged. Any reject, disconnect or missed-call
-  timeout stops and shuts the engine down and drops pending callbacks.
+  timeout stops and shuts the engine down and drops pending callbacks. The
+  Actions screen keeps one `TextToSpeech` instance of its own to list the
+  installed voices for the picker and preview the first non-blank message line;
+  it offers the device language's offline, installed voices sorted by name, plus
+  "Default" and any saved name that is no longer installed.
 - A PLAY_MEDIA resolves `$rest` through Spotify. "Liked songs" and "my liked
   songs" (case-insensitive) skip the search and open the fixed
   `spotify:collection:tracks` URI, labelled "Liked Songs"; a client-credentials

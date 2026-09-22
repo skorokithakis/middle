@@ -49,6 +49,9 @@
     <string name="actions_fake_call_caller_name_label">Caller name</string>
     <string name="actions_fake_call_caller_number_label">Caller number</string>
     <string name="actions_fake_call_message_label">Message</string>
+    <string name="actions_fake_call_voice_label">Voice</string>
+    <string name="actions_fake_call_voice_default">Default</string>
+    <string name="actions_fake_call_voice_preview">Preview</string>
     <string name="actions_fake_call_default_message">Hey, it\'s me.\nSorry to bother you, do you have a minute?\nSomething came up and I really need you here.\nCan you come over now? It\'s urgent.</string>
     <string name="actions_fake_call_choose_contact">Choose contact</string>
     <string name="actions_overlay_message">Alarms need the \"Display over other apps\" permission to be set hands-free.</string>

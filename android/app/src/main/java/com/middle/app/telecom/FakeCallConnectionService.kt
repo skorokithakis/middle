@@ -26,7 +26,8 @@ class FakeCallConnectionService : ConnectionService() {
         request: ConnectionRequest,
     ): Connection {
         val message = request.extras?.getString(FakeCallAccount.EXTRA_MESSAGE).orEmpty()
-        val connection = FakeCallConnection(this, message)
+        val voiceName = request.extras?.getString(FakeCallAccount.EXTRA_VOICE_NAME).orEmpty()
+        val connection = FakeCallConnection(this, message, voiceName)
         connection.setAddress(request.address, TelecomManager.PRESENTATION_ALLOWED)
         val callerName = request.extras?.getString(FakeCallAccount.EXTRA_CALLER_NAME)
         if (!callerName.isNullOrEmpty()) {
@@ -52,6 +53,7 @@ class FakeCallConnectionService : ConnectionService() {
 private class FakeCallConnection(
     context: Context,
     message: String,
+    private val voiceName: String,
 ) : Connection() {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -140,10 +142,28 @@ private class FakeCallConnection(
                 }
             }
         })
+        // A stale name (the voice was uninstalled after the action was saved)
+        // falls back to the engine default instead of failing.
+        applyVoice(tts)
         ttsReady = true
         // The call was answered before the engine finished initialising.
         if (answered) {
             handler.postDelayed(startSpeech, ANSWER_DELAY_MILLIS)
+        }
+    }
+
+    /**
+     * Selects the action's voice when it is installed, so a stale name — the
+     * voice was uninstalled after the action was saved — is logged and the
+     * engine's default voice is kept.
+     */
+    private fun applyVoice(tts: TextToSpeech) {
+        if (voiceName.isEmpty()) return
+        val voice = tts.voices?.firstOrNull { it.name == voiceName }
+        if (voice == null) {
+            Log.w(TAG, "[action] fake call voice \"$voiceName\" is not installed; using default")
+        } else {
+            tts.voice = voice
         }
     }
 

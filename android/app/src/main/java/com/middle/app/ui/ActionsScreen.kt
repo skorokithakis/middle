@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
@@ -96,6 +97,13 @@ fun ActionsScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+
+    // One engine for the screen: the fake-call voice picker reads its installed
+    // voices and previews through it, and it is shut down when the screen leaves.
+    val voicePreview = remember(context) { FakeCallVoicePreview(context) }
+    DisposableEffect(voicePreview) {
+        onDispose { voicePreview.shutdown() }
+    }
 
     // A settings import can replace the stored actions while this screen is
     // not composed, so reload on first composition and on every resume.
@@ -263,6 +271,7 @@ fun ActionsScreen(
                         onMoveUp = { viewModel.moveUp(action.id) },
                         onMoveDown = { viewModel.moveDown(action.id) },
                         onChooseContact = { chooseContact(action.id) },
+                        voicePreview = voicePreview,
                     )
                 }
                 if (deviceType == AppSettings.DEVICE_TYPE_RING) {
@@ -273,6 +282,7 @@ fun ActionsScreen(
                                 viewModel.setClickAction(count, action)
                             },
                             onChooseContact = chooseContact,
+                            voicePreview = voicePreview,
                         )
                     }
                 }
@@ -443,6 +453,7 @@ private fun ActionCard(
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
     onChooseContact: () -> Unit,
+    voicePreview: FakeCallVoicePreview,
 ) {
     Card(
         modifier = Modifier
@@ -514,6 +525,7 @@ private fun ActionCard(
                     action = action,
                     onUpdate = onUpdate,
                     onChooseContact = onChooseContact,
+                    voicePreview = voicePreview,
                 )
             }
             if (action.type == ActionType.MEDIA_KEY) {
@@ -553,6 +565,7 @@ private fun FakeCallFields(
     action: Action,
     onUpdate: (Action) -> Unit,
     onChooseContact: () -> Unit,
+    voicePreview: FakeCallVoicePreview,
 ) {
     val context = LocalContext.current
     OutlinedTextField(
@@ -578,6 +591,17 @@ private fun FakeCallFields(
             .fillMaxWidth()
             .heightIn(min = 96.dp),
         label = { Text(stringResource(R.string.actions_fake_call_message_label)) },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    // The preview speaks the same first non-blank line the answered call starts
+    // with; with no such line there is nothing to preview.
+    val previewLine = action.message.lines().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+    VoiceSelector(
+        voiceName = action.voiceName,
+        installedVoices = voicePreview.voiceNames,
+        previewEnabled = voicePreview.ready && previewLine != null,
+        onSelect = { onUpdate(action.copy(voiceName = it)) },
+        onPreview = { previewLine?.let { voicePreview.speak(it, action.voiceName) } },
     )
     Spacer(modifier = Modifier.height(8.dp))
     OutlinedButton(onClick = onChooseContact) {
@@ -614,6 +638,7 @@ private fun RingButtonSection(
     clickActions: Map<Int, Action>,
     onSetClickAction: (Int, Action?) -> Unit,
     onChooseContact: (String) -> Unit,
+    voicePreview: FakeCallVoicePreview,
 ) {
     Column(
         modifier = Modifier
@@ -636,6 +661,7 @@ private fun RingButtonSection(
                 action = clickActions[count],
                 onSelect = { onSetClickAction(count, it) },
                 onChooseContact = onChooseContact,
+                voicePreview = voicePreview,
             )
         }
     }
@@ -647,6 +673,7 @@ private fun ClickActionRow(
     action: Action?,
     onSelect: (Action?) -> Unit,
     onChooseContact: (String) -> Unit,
+    voicePreview: FakeCallVoicePreview,
 ) {
     val fakeCallMessage = stringResource(R.string.actions_fake_call_default_message)
     Column(
@@ -676,6 +703,7 @@ private fun ClickActionRow(
                 action = action,
                 onUpdate = { onSelect(it) },
                 onChooseContact = { onChooseContact(action.id) },
+                voicePreview = voicePreview,
             )
         }
         if (action != null && action.type == ActionType.WEBHOOK) {
@@ -793,6 +821,46 @@ private fun MediaKeySelector(selected: MediaKey, onSelect: (MediaKey) -> Unit) {
     }
 }
 
+/**
+ * The fake call's voice picker and preview. "Default" (the blank name) is always
+ * offered; the installed voices appear once the screen's engine is ready. While
+ * it is not ready only "Default" is listed, plus a saved name that is not
+ * installed, and the preview is disabled.
+ */
+@Composable
+private fun VoiceSelector(
+    voiceName: String,
+    installedVoices: List<String>,
+    previewEnabled: Boolean,
+    onSelect: (String) -> Unit,
+    onPreview: () -> Unit,
+) {
+    Column {
+        Text(
+            text = stringResource(R.string.actions_fake_call_voice_label),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            DropdownSelector(
+                selectedLabel = voiceOptionLabel(voiceName),
+                options = fakeCallVoiceOptions(installedVoices, voiceName),
+                optionLabel = { voiceOptionLabel(it) },
+                onSelect = onSelect,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            OutlinedButton(onClick = onPreview, enabled = previewEnabled) {
+                Text(stringResource(R.string.actions_fake_call_voice_preview))
+            }
+        }
+    }
+}
+
+@Composable
+private fun voiceOptionLabel(name: String): String =
+    if (name == DEFAULT_VOICE) stringResource(R.string.actions_fake_call_voice_default) else name
+
 /** A button that shows [selectedLabel] and lets the user pick one of [options]. */
 @Composable
 private fun <T> DropdownSelector(
@@ -800,9 +868,10 @@ private fun <T> DropdownSelector(
     options: List<T>,
     optionLabel: @Composable (T) -> String,
     onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier = modifier) {
         OutlinedButton(onClick = { expanded = true }) {
             Text(selectedLabel)
         }
