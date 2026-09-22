@@ -23,6 +23,8 @@ import com.middle.app.R
 import com.middle.app.telecom.FakeCallAccount
 import com.middle.app.transcription.CommandKind
 import com.middle.app.transcription.ParsedCommand
+import com.middle.app.transcription.SpotifySearchClient
+import com.middle.app.transcription.SpotifySearchResult
 import com.middle.app.transcription.TimeParseClient
 import com.middle.app.transcription.TimeParseResult
 import java.time.LocalDateTime
@@ -33,7 +35,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Executes an ALARM, CALENDAR or FAKE_CALL [ActionHit] against the system.
+ * Executes an ALARM, CALENDAR, FAKE_CALL or PLAY_MEDIA [ActionHit] against the
+ * system.
  *
  * [run] blocks while it calls the time parser and writes to a provider, so the
  * caller runs it on [kotlinx.coroutines.Dispatchers.IO]. It returns true only
@@ -41,11 +44,13 @@ import java.util.Locale
  * action's `stop` and otherwise continue with the next action. A WEBHOOK hit is
  * not this class's job and always reports no result.
  *
- * Every notification uses the `middle_actions` channel. Successes and the
- * tap-to-set alarm use [MiddleApplication.ACTIONS_NOTIFICATION_ID] so a later
- * result replaces the pending one; failures use
+ * Every notification uses the `middle_actions` channel. Successes, the
+ * tap-to-set alarm and tap-to-play media use
+ * [MiddleApplication.ACTIONS_NOTIFICATION_ID] so a later result replaces the
+ * pending one; failures use
  * [MiddleApplication.ACTIONS_INFO_NOTIFICATION_ID] so they cannot replace it.
- * The tap-to-set alarm is the only notification that does not open the app.
+ * The tap-to-set alarm and tap-to-play media are the only notifications that do
+ * not open the app.
  */
 class ActionRunner(context: Context) {
 
@@ -76,6 +81,7 @@ class ActionRunner(context: Context) {
             }
             ActionType.WEBHOOK -> false
             ActionType.FAKE_CALL -> runFakeCall(hit.action)
+            ActionType.PLAY_MEDIA -> runPlayMedia(hit)
         }
     }
 
@@ -228,6 +234,89 @@ class ActionRunner(context: Context) {
         }
     }
 
+    /**
+     * Plays [ActionHit.rest] in the Spotify app. Spotify ignores Android's
+     * play-from-search route and refuses a MediaBrowserService connection, so
+     * the track URI comes from Spotify's Web API and is opened with a VIEW
+     * intent addressed to the Spotify package. "Liked songs" is a fixed URI,
+     * because a client-credentials token cannot read the user's library. A
+     * blank query or missing credentials is not a failure the user can act on,
+     * so those post an info notification and report no result to let later
+     * actions run.
+     */
+    private fun runPlayMedia(hit: ActionHit): Boolean {
+        val query = hit.rest.trim()
+        if (query.isBlank()) {
+            Log.d(TAG, "[action] play media action matched but the query is blank")
+            postInfoNotification(appContext.getString(R.string.play_media_no_query_notification_text))
+            return false
+        }
+
+        val clientId = settings.spotifyClientId
+        val clientSecret = settings.spotifyClientSecret
+        if (clientId.isBlank() || clientSecret.isBlank()) {
+            Log.w(TAG, "[action] play media action matched but no Spotify credentials are set")
+            postInfoNotification(appContext.getString(R.string.play_media_missing_credentials_notification_text))
+            return false
+        }
+
+        val uri: String
+        val label: String
+        if (query.equals("liked songs", ignoreCase = true) ||
+            query.equals("my liked songs", ignoreCase = true)
+        ) {
+            uri = LIKED_SONGS_URI
+            label = appContext.getString(R.string.play_media_liked_songs_label)
+        } else {
+            when (val result = SpotifySearchClient(clientId, clientSecret).search(query)) {
+                is SpotifySearchResult.Success -> {
+                    uri = result.track.uri
+                    label = "${result.track.artist} - ${result.track.name}"
+                }
+                SpotifySearchResult.NotFound -> {
+                    Log.d(TAG, "[action] no Spotify result for \"$query\"")
+                    postInfoNotification(
+                        appContext.getString(R.string.play_media_no_result_notification_text, query),
+                    )
+                    return false
+                }
+                is SpotifySearchResult.Failure -> {
+                    Log.w(TAG, "[action] Spotify search failed: ${result.message}")
+                    postInfoNotification(appContext.getString(R.string.play_media_search_failed_notification_text))
+                    return false
+                }
+            }
+        }
+
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply {
+            setPackage(SPOTIFY_PACKAGE)
+            putExtra(Intent.EXTRA_REFERRER, Uri.parse("android-app://" + appContext.packageName))
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        val text = appContext.getString(R.string.play_media_playing_notification_text, label)
+
+        // Starting an activity from the background needs the overlay permission.
+        // Without it the song is offered as a notification the user taps.
+        if (android.provider.Settings.canDrawOverlays(appContext)) {
+            try {
+                appContext.startActivity(intent)
+            } catch (exception: ActivityNotFoundException) {
+                Log.w(TAG, "[action] Spotify is not installed", exception)
+                postInfoNotification(appContext.getString(R.string.play_media_spotify_not_installed_notification_text))
+                return false
+            } catch (exception: SecurityException) {
+                Log.w(TAG, "[action] Spotify refused the play request", exception)
+                postInfoNotification(appContext.getString(R.string.play_media_refused_notification_text))
+                return false
+            }
+            postNotification(text, MiddleApplication.ACTIONS_NOTIFICATION_ID, openMiddlePendingIntent())
+            return true
+        }
+
+        postTapToPlayNotification(intent, text)
+        return true
+    }
+
     private fun insertEvent(calendarId: Long, title: String, command: ParsedCommand) {
         val start = command.start ?: return
         val zone = ZoneId.systemDefault()
@@ -301,6 +390,16 @@ class ActionRunner(context: Context) {
         )
     }
 
+    private fun postTapToPlayNotification(intent: Intent, text: String) {
+        val pendingIntent = PendingIntent.getActivity(
+            appContext,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        postNotification(text, MiddleApplication.ACTIONS_NOTIFICATION_ID, pendingIntent)
+    }
+
     private fun postInfoNotification(text: String) {
         postNotification(text, MiddleApplication.ACTIONS_INFO_NOTIFICATION_ID, openMiddlePendingIntent())
     }
@@ -331,6 +430,10 @@ class ActionRunner(context: Context) {
 
     companion object {
         private const val TAG = "ActionRunner"
+        private const val SPOTIFY_PACKAGE = "com.spotify.music"
+        // Spotify's own URI for the signed-in user's saved tracks; the app
+        // cannot discover it through a client-credentials token.
+        private const val LIKED_SONGS_URI = "spotify:collection:tracks"
     }
 }
 

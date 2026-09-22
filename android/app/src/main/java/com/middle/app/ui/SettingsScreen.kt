@@ -63,6 +63,8 @@ fun SettingsScreen(
     val transcriptionProvider by viewModel.transcriptionProvider.collectAsState()
     val openAiApiKey by viewModel.openAiApiKey.collectAsState()
     val elevenLabsApiKey by viewModel.elevenLabsApiKey.collectAsState()
+    val spotifyClientId by viewModel.spotifyClientId.collectAsState()
+    val spotifyClientSecret by viewModel.spotifyClientSecret.collectAsState()
     val backgroundSync by viewModel.backgroundSyncEnabled.collectAsState()
     val transcription by viewModel.transcriptionEnabled.collectAsState()
     val isPaired by viewModel.isPaired.collectAsState()
@@ -240,6 +242,32 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            Text("Spotify", style = MaterialTheme.typography.titleSmall)
+            Spacer(modifier = Modifier.height(4.dp))
+            OutlinedTextField(
+                value = spotifyClientId,
+                onValueChange = { viewModel.setSpotifyClientId(it) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Client ID") },
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = spotifyClientSecret,
+                onValueChange = { viewModel.setSpotifyClientSecret(it) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                label = { Text("Client Secret") },
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Create an app at developer.spotify.com and paste its Client ID and Client Secret.",
+                style = MaterialTheme.typography.bodySmall,
+            )
 
             Spacer(modifier = Modifier.height(24.dp))
 

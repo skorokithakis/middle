@@ -53,6 +53,7 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
                 ActionType.CALENDAR -> Action.DEFAULT_CALENDAR_PATTERN
                 ActionType.WEBHOOK -> Action.DEFAULT_WEBHOOK_PATTERN
                 ActionType.FAKE_CALL -> Action.DEFAULT_FAKE_CALL_PATTERN
+                ActionType.PLAY_MEDIA -> Action.DEFAULT_PLAY_MEDIA_PATTERN
             },
             // A webhook is the catch-all at the end of the chain; the other
             // types normally stop it.

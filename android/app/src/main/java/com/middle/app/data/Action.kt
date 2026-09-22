@@ -10,6 +10,7 @@ enum class ActionType {
     CALENDAR,
     WEBHOOK,
     FAKE_CALL,
+    PLAY_MEDIA,
 }
 
 /**
@@ -47,6 +48,9 @@ data class Action(
         const val DEFAULT_CALENDAR_PATTERN = """\b(remind me|add (an? )?(appointment|event))\b"""
         const val DEFAULT_WEBHOOK_PATTERN = ".*"
         const val DEFAULT_FAKE_CALL_PATTERN = """\bfake call\b"""
+        // Anchored at the start so a normal note like "I will play tennis"
+        // does not fire.
+        const val DEFAULT_PLAY_MEDIA_PATTERN = """^play\b"""
 
         private const val TAG = "Action"
         private const val FIELD_ID = "id"

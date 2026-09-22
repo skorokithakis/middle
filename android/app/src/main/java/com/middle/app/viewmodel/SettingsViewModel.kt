@@ -33,6 +33,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _elevenLabsApiKey = MutableStateFlow(settings.elevenLabsApiKey)
     val elevenLabsApiKey: StateFlow<String> = _elevenLabsApiKey
 
+    private val _spotifyClientId = MutableStateFlow(settings.spotifyClientId)
+    val spotifyClientId: StateFlow<String> = _spotifyClientId
+
+    private val _spotifyClientSecret = MutableStateFlow(settings.spotifyClientSecret)
+    val spotifyClientSecret: StateFlow<String> = _spotifyClientSecret
+
     private val _transcriptionProvider = MutableStateFlow(settings.transcriptionProvider)
     val transcriptionProvider: StateFlow<String> = _transcriptionProvider
 
@@ -79,6 +85,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setElevenLabsApiKey(key: String) {
         settings.elevenLabsApiKey = key
         _elevenLabsApiKey.value = key
+    }
+
+    fun setSpotifyClientId(id: String) {
+        settings.spotifyClientId = id
+        _spotifyClientId.value = id
+    }
+
+    fun setSpotifyClientSecret(secret: String) {
+        settings.spotifyClientSecret = secret
+        _spotifyClientSecret.value = secret
     }
 
     fun setTranscriptionProvider(provider: String) {
@@ -240,6 +256,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun refreshFromSettings() {
         _openAiApiKey.value = settings.openAiApiKey
         _elevenLabsApiKey.value = settings.elevenLabsApiKey
+        _spotifyClientId.value = settings.spotifyClientId
+        _spotifyClientSecret.value = settings.spotifyClientSecret
         _transcriptionProvider.value = settings.transcriptionProvider
         _deviceType.value = settings.deviceType
         _ringDeviceAddress.value = settings.ringDeviceAddress

@@ -273,6 +273,7 @@ private fun actionTypeLabel(type: ActionType): String = when (type) {
     ActionType.CALENDAR -> stringResource(R.string.actions_type_calendar)
     ActionType.WEBHOOK -> stringResource(R.string.actions_type_webhook)
     ActionType.FAKE_CALL -> stringResource(R.string.actions_type_fake_call)
+    ActionType.PLAY_MEDIA -> stringResource(R.string.actions_type_play_media)
 }
 
 /** Reads the name and number of the single row the contact picker returned. */

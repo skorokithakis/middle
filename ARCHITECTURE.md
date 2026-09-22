@@ -22,9 +22,9 @@ middle/
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
 │       ├── data/         # Recordings, actions, webhook client, pipeline queue, settings
-│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL enum; list persisted as one JSON array string
+│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL/PLAY_MEDIA enum; list persisted as one JSON array string
 │       │   ├── ActionMatcher.kt        # Pure ordered pattern/rest rules, no time parsing (unit tested)
-│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL hits: time-parse, clock app, calendar write or Telecom fake call
+│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA hits: time-parse, clock app, calendar write, Telecom fake call or Spotify Web API search plus a Spotify deep link
 │       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs; runs the action phase after a transcription
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
@@ -44,12 +44,13 @@ middle/
 │       │   ├── CaptureEndReason.kt     # Why a mic capture ended (speech/no speech/cap/failed)
 │       │   └── AudioEncoder.kt         # MediaCodec AAC encoder → M4A via MediaMuxer
 │       ├── transcription/
+│       │   ├── SpotifySearchClient.kt  # Spotify Web API client-credentials token + top-track search (play-media action)
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
-│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call, reorder/delete; contact picker, calendar picker and overlay-permission card
+│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call/play-media, reorder/delete; contact picker, calendar picker and overlay-permission card
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
-│       │   ├── SettingsScreen.kt       # Provider/API key, toggles, sync device and ring picker, settings backup export/import
+│       │   ├── SettingsScreen.kt       # Provider/API key, Spotify Client ID/Secret, toggles, sync device and ring picker, settings backup export/import
 │       │   ├── LogScreen.kt            # Pipeline and webhook delivery log (monospace, error-coloured)
 │       │   └── theme/Theme.kt          # Material3 theme
 │       ├── viewmodel/
@@ -153,7 +154,7 @@ INMP441 (I2S, 32-bit stereo) → left channel >> 16 → int16 PCM
   → signed 16-bit PCM
   → MP3 (lameenc, sync.py) or AAC/M4A (MediaCodec, Android)
   → optional transcription (OpenAI gpt-4o-transcribe)
-  → optional actions (ActionMatcher → ActionRunner: clock app, calendar event or fake call)
+  → optional actions (ActionMatcher → ActionRunner: clock app, calendar event, fake call or play media)
   → optional per-action webhook delivery (POST with a JSON body template, $transcript/$rest)
 ```
 
@@ -217,12 +218,12 @@ Key details:
 
 Actions are user-defined rules that run once against a transcript after it is
 produced, before any webhook delivery. `Action.kt` is the data class and the
-`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL` enum, `ActionMatcher.kt` holds the pure
-ordered matching rules (unit-tested by `ActionMatcherTest.kt`; `ActionTest.kt`
-covers JSON parsing and round-tripping), `ActionRunner.kt` performs the
-ALARM/CALENDAR/FAKE_CALL side effects (unit-tested by `ActionRunnerTest.kt`),
-and `TimeParseClient.kt` asks the model for a time (unit-tested by
-`TimeParseClientTest.kt`).
+`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL`/`PLAY_MEDIA` enum, `ActionMatcher.kt`
+holds the pure ordered matching rules (unit-tested by `ActionMatcherTest.kt`;
+`ActionTest.kt` covers JSON parsing and round-tripping), `ActionRunner.kt`
+performs the ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA side effects (unit-tested by
+`ActionRunnerTest.kt`), and `TimeParseClient.kt` asks the model for a time
+(unit-tested by `TimeParseClientTest.kt`).
 
 Key details:
 - The whole list is one JSON array string under a single `Settings` key
@@ -234,16 +235,18 @@ Key details:
   `webhookBodyTemplate`; `$rest` is the transcript after that pattern's match,
   trimmed (empty for the `.*` catch-all). `FAKE_CALL` actions also carry the
   caller `callerName` and `callerNumber` (both serialized always and read as
-  empty when absent).
+  empty when absent). `PLAY_MEDIA` actions carry no extra fields: their query is
+  `$rest`. Its default pattern is `^play\b`, anchored at the start so a normal
+  note like "I will play tennis" does not fire.
 - Evaluation happens exactly once, in
   `PipelineQueue.advanceAfterTranscription()` on the only successful
   transcription of a recording, on the IO dispatcher. `ActionMatcher.plan()`
   walks the list in order and collects each enabled action whose pattern matches,
   up to and including the first hit with `stop = true`. An invalid pattern is
   reported and never matches, but does not stop the list.
-- `stop` is applied optimistically: if a stopping ALARM/CALENDAR hit produces
-  nothing (no time, LLM failure), evaluation resumes after it with
-  `ActionMatcher.planFrom()`. WEBHOOK hits are collected into the job's
+- `stop` is applied optimistically: if a stopping ALARM/CALENDAR/PLAY_MEDIA hit
+  produces nothing (no time, LLM failure, blank query), evaluation resumes after
+  it with `ActionMatcher.planFrom()`. WEBHOOK hits are collected into the job's
   `webhookActionIds`, for delivery in that order.
 - ALARM/CALENDAR need an OpenAI key: `TimeParseClient` sends the whole transcript,
   the local date/time, weekday and zone, and the command kind (`CommandKind.ALARM`
@@ -280,15 +283,33 @@ Key details:
   shows its own incoming-call screen with the user's ringtone and DND rules. No
   overlay permission is needed. The connection rings for 45 s, then disconnects
   as missed; answering activates it, rejecting or disconnecting ends it.
+- A PLAY_MEDIA resolves `$rest` through Spotify. "Liked songs" and "my liked
+  songs" (case-insensitive) skip the search and open the fixed
+  `spotify:collection:tracks` URI, labelled "Liked Songs"; a client-credentials
+  token cannot read the user's library, so the saved-tracks URI is the only way
+  to reach them. Any other query is searched on Spotify's Web API:
+  `SpotifySearchClient` fetches a client-credentials token (Basic auth with the
+  Client ID/Secret configured in Settings, body `grant_type=client_credentials`,
+  one token per play, never cached or logged), then calls
+  `GET /v1/search?q=…&type=track&limit=1` with the Bearer token and takes the
+  first `tracks.items[0]` as `artist - name`. The URI is opened with
+  `Intent.ACTION_VIEW` addressed to `com.spotify.music`, carrying the app's
+  package as `EXTRA_REFERRER`, so the Spotify app comes to the front and starts
+  playback. Like the alarm, that start needs the overlay permission; without it
+  a tap-to-play notification with the same "Playing …" text is posted instead.
+  A blank query, a missing Client ID/Secret, an empty result, a failed search
+  and a missing Spotify app each post a distinct info notification and count as
+  no result.
 - The clock app is only started when the app can draw overlays. Without
   `SYSTEM_ALERT_WINDOW` the alarm is posted as a notification the user taps;
   `ActionsScreen.kt` shows a card to grant it. The alarm intent needs
   `com.android.alarm.permission.SET_ALARM`, and reminders need
   `READ_CALENDAR`/`WRITE_CALENDAR`.
-- All action notifications use the `middle_actions` channel. Successes and the
-  tap-to-set alarm use ID 5 so a later result replaces the pending one; failures
-  and other info use ID 6 so they cannot replace it. The tap-to-set alarm is the
-  only notification that launches the clock app — every other one opens the app.
+- All action notifications use the `middle_actions` channel. Successes, the
+  tap-to-set alarm and tap-to-play media use ID 5 so a later result replaces the
+  pending one; failures and other info use ID 6 so they cannot replace it. The
+  tap-to-set alarm and tap-to-play media are the only notifications that do not
+  open the app — every other one opens the app.
 - The legacy global webhook settings are migrated into a catch-all WEBHOOK
   action (`pattern = ".*"`, `stop = false`) by
   `Settings.migrateGlobalWebhookToAction()`. A non-empty legacy URL migrates
@@ -374,9 +395,9 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. A header card always shows the selected device's sync status (a fixed `Index` label for the ring) and its battery voltage. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
-| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook or fake-call action. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
+| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call or play-media action. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
-| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
+| Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), Spotify Client ID and Client Secret (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
 | Assistant | `ASSIST` / `VOICE_COMMAND` | Not a nav route: a dialog-style card shown when the system assistant is triggered (long-press power). Shows "Listening…" and elapsed time with a Stop button; Silero VAD ends the recording when the speaker stops, then it saves through the same pipeline. Has no launcher icon and is excluded from recents. |
 
 Navigation uses a `ModalNavigationDrawer` (hamburger icon in each screen's top bar).

@@ -74,6 +74,27 @@ class ActionMatcherTest {
     }
 
     @Test
+    fun playMediaDefaultPatternKeepsTheSongAsRest() {
+        val action = alarm.copy(
+            id = "play",
+            type = ActionType.PLAY_MEDIA,
+            pattern = Action.DEFAULT_PLAY_MEDIA_PATTERN,
+        )
+        val hit = plan("Play Bohemian Rhapsody", action).hits.single()
+        assertEquals("Bohemian Rhapsody", hit.rest)
+    }
+
+    @Test
+    fun playMediaDefaultPatternDoesNotMatchPlayInsideASentence() {
+        val action = alarm.copy(
+            id = "play",
+            type = ActionType.PLAY_MEDIA,
+            pattern = Action.DEFAULT_PLAY_MEDIA_PATTERN,
+        )
+        assertTrue(plan("I will play tennis", action).hits.isEmpty())
+    }
+
+    @Test
     fun catchAllLeavesAnEmptyRest() {
         val catchAll = alarm.copy(
             id = "hook",

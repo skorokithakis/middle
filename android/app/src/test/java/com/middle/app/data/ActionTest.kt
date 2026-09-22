@@ -157,6 +157,18 @@ class ActionTest {
     }
 
     @Test
+    fun playMediaRoundTripsThroughJson() {
+        val action = Action(
+            id = "a5",
+            enabled = true,
+            type = ActionType.PLAY_MEDIA,
+            pattern = Action.DEFAULT_PLAY_MEDIA_PATTERN,
+            stop = true,
+        )
+        assertEquals(listOf(action), Action.fromJson(Action.toJson(listOf(action))))
+    }
+
+    @Test
     fun absentCallerFieldsReadAsEmptyDefaults() {
         val json = """
             [

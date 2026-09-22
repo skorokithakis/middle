@@ -30,6 +30,7 @@
     <string name="actions_type_calendar">Reminder</string>
     <string name="actions_type_webhook">Webhook</string>
     <string name="actions_type_fake_call">Fake call</string>
+    <string name="actions_type_play_media">Play media</string>
     <string name="actions_pattern_label">Pattern</string>
     <string name="actions_stop">Stop after this action</string>
     <string name="actions_webhook_url_label">Webhook URL</string>
@@ -56,6 +57,14 @@
     <string name="alarm_could_not_set_notification_text">Could not set alarm</string>
     <string name="calendar_none_notification_text">Choose a calendar in Actions to add reminders</string>
     <string name="fake_call_account_disabled_notification_text">Enable Middle in Calling accounts to make fake calls</string>
+    <string name="play_media_no_query_notification_text">Could not read a song to play</string>
+    <string name="play_media_missing_credentials_notification_text">Spotify actions need a Client ID and Client Secret</string>
+    <string name="play_media_no_result_notification_text">No Spotify result for %1$s</string>
+    <string name="play_media_search_failed_notification_text">Could not search Spotify</string>
+    <string name="play_media_spotify_not_installed_notification_text">Spotify is not installed</string>
+    <string name="play_media_refused_notification_text">Spotify refused the request</string>
+    <string name="play_media_liked_songs_label">Liked Songs</string>
+    <string name="play_media_playing_notification_text">Playing %1$s</string>
     <string name="calendar_default_title">Middle reminder</string>
     <string name="calendar_added_notification_text">Reminder added: %1$s, %2$s</string>
     <string name="calendar_added_all_day_notification_text">Reminder added: %1$s, %2$s all day</string>

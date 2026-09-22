@@ -17,6 +17,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 data class SettingsBackup(
     val openAiApiKey: String? = null,
     val elevenLabsApiKey: String? = null,
+    val spotifyClientId: String? = null,
+    val spotifyClientSecret: String? = null,
     val transcriptionProvider: String? = null,
     val deviceType: String? = null,
     val ringDeviceAddress: String? = null,
@@ -63,6 +65,16 @@ class Settings(context: Context) {
     var elevenLabsApiKey: String
         get() = prefs.getString(KEY_ELEVENLABS_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_ELEVENLABS_API_KEY, value).apply()
+
+    // Spotify client-credentials pair for the PLAY_MEDIA action. The app polls
+    // the Web API for a track URI, then hands it to the installed Spotify app.
+    var spotifyClientId: String
+        get() = prefs.getString(KEY_SPOTIFY_CLIENT_ID, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SPOTIFY_CLIENT_ID, value).apply()
+
+    var spotifyClientSecret: String
+        get() = prefs.getString(KEY_SPOTIFY_CLIENT_SECRET, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SPOTIFY_CLIENT_SECRET, value).apply()
 
     var transcriptionProvider: String
         get() = prefs.getString(KEY_TRANSCRIPTION_PROVIDER, TRANSCRIPTION_PROVIDER_OPENAI) ?: TRANSCRIPTION_PROVIDER_OPENAI
@@ -259,6 +271,8 @@ class Settings(context: Context) {
         put(BACKUP_VERSION_KEY, BACKUP_VERSION)
         put(KEY_OPENAI_API_KEY, openAiApiKey)
         put(KEY_ELEVENLABS_API_KEY, elevenLabsApiKey)
+        put(KEY_SPOTIFY_CLIENT_ID, spotifyClientId)
+        put(KEY_SPOTIFY_CLIENT_SECRET, spotifyClientSecret)
         put(KEY_TRANSCRIPTION_PROVIDER, transcriptionProvider)
         put(KEY_DEVICE_TYPE, deviceType)
         put(KEY_RING_DEVICE_ADDRESS, ringDeviceAddress)
@@ -326,6 +340,8 @@ class Settings(context: Context) {
             SettingsBackup(
                 openAiApiKey = json.stringOrNull(KEY_OPENAI_API_KEY),
                 elevenLabsApiKey = json.stringOrNull(KEY_ELEVENLABS_API_KEY),
+                spotifyClientId = json.stringOrNull(KEY_SPOTIFY_CLIENT_ID),
+                spotifyClientSecret = json.stringOrNull(KEY_SPOTIFY_CLIENT_SECRET),
                 transcriptionProvider = json.stringOrNull(KEY_TRANSCRIPTION_PROVIDER),
                 deviceType = json.stringOrNull(KEY_DEVICE_TYPE),
                 ringDeviceAddress = json.stringOrNull(KEY_RING_DEVICE_ADDRESS),
@@ -350,6 +366,8 @@ class Settings(context: Context) {
     fun applyBackup(backup: SettingsBackup) {
         backup.openAiApiKey?.let { openAiApiKey = it }
         backup.elevenLabsApiKey?.let { elevenLabsApiKey = it }
+        backup.spotifyClientId?.let { spotifyClientId = it }
+        backup.spotifyClientSecret?.let { spotifyClientSecret = it }
         backup.transcriptionProvider?.let { transcriptionProvider = it }
         backup.deviceType?.let { deviceType = it }
         backup.ringDeviceAddress?.let { ringDeviceAddress = it }
@@ -386,6 +404,8 @@ class Settings(context: Context) {
 
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_ELEVENLABS_API_KEY = "elevenlabs_api_key"
+        private const val KEY_SPOTIFY_CLIENT_ID = "spotify_client_id"
+        private const val KEY_SPOTIFY_CLIENT_SECRET = "spotify_client_secret"
         private const val KEY_TRANSCRIPTION_PROVIDER = "transcription_provider"
         private const val KEY_DEVICE_TYPE = "device_type"
         private const val KEY_BACKGROUND_SYNC = "background_sync"
@@ -416,6 +436,8 @@ class Settings(context: Context) {
         private val BACKUP_STRING_KEYS = listOf(
             KEY_OPENAI_API_KEY,
             KEY_ELEVENLABS_API_KEY,
+            KEY_SPOTIFY_CLIENT_ID,
+            KEY_SPOTIFY_CLIENT_SECRET,
             KEY_TRANSCRIPTION_PROVIDER,
             KEY_DEVICE_TYPE,
             KEY_RING_DEVICE_ADDRESS,
