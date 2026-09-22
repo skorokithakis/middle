@@ -8,7 +8,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.middle.app.MiddleApplication
 import com.middle.app.audio.PhoneRecorder
-import com.middle.app.data.ActionType
 import com.middle.app.data.Recording
 import com.middle.app.data.RecordingSaver
 import com.middle.app.data.RecordingsRepository
@@ -83,10 +82,8 @@ class RecordingsViewModel(application: Application) : AndroidViewModel(applicati
         _currentlyPlaying.value = null
     }
 
-    val webhookEnabled: Boolean
-        get() = settings.actions.any {
-            it.enabled && it.type == ActionType.WEBHOOK && it.webhookUrl.trim().isNotEmpty()
-        }
+    val anyActionEnabled: Boolean
+        get() = settings.actions.any { it.enabled }
 
     val pendingFilenames: StateFlow<Set<String>>
         get() = pipelineQueue.pendingFilenames

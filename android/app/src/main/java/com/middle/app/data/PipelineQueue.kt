@@ -26,7 +26,7 @@ import java.io.File
 private const val TAG = "PipelineQueue"
 
 /** The stage a queued recording is at. Persisted in the job file. */
-enum class PipelineStage { TRANSCRIBE, WEBHOOK }
+enum class PipelineStage { TRANSCRIBE, RUN_ACTIONS, WEBHOOK }
 
 /**
  * Durable transcribe-then-webhook jobs, one JSON file per recording.
@@ -101,21 +101,25 @@ class PipelineQueue(
     }
 
     /**
-     * Ensures a job exists (same rules as [enqueue]) and makes it due now.
-     * Used by the UI's manual retry.
+     * Replans [filename] from its recording state and makes the job due now.
+     * A recording with no transcript is queued at [PipelineStage.TRANSCRIBE];
+     * one whose transcript already exists is queued at
+     * [PipelineStage.RUN_ACTIONS], so the retry re-runs the full action phase
+     * (an ALARM fires again) before any webhook delivery. Any pending job,
+     * including a WEBHOOK one, is replaced.
+     *
+     * Called on the main thread, so it only writes the job file and wakes the
+     * worker; [ActionRunner] runs later on the worker's IO dispatcher.
      */
     fun retryNow(filename: String) {
         synchronized(lock) {
-            // A WEBHOOK job already holds the ids matched at transcription time.
-            // Re-planning would recompute them from the transcript and could
-            // lose an id the user just re-enabled, so an existing job keeps its
-            // persisted ids and is only made due now.
-            val hasWebhookJob = readJobsLocked().any {
-                it.filename == filename && it.stage == PipelineStage.WEBHOOK
+            val stage = if (transcriptFile(filename).exists()) {
+                PipelineStage.RUN_ACTIONS
+            } else {
+                PipelineStage.TRANSCRIBE
             }
-            if (hasWebhookJob || ensureJobLocked(filename)) {
-                resetBackoffLocked(filename)
-            }
+            writeJobLocked(filename, stage)
+            resetBackoffLocked(filename)
             refreshPendingFilenamesLocked()
         }
         wake()
@@ -203,6 +207,28 @@ class PipelineQueue(
                         bumpOtherTranscribeJobs(jobs, index)
                     }
                 }
+                PipelineStage.RUN_ACTIONS -> {
+                    if (recordingFile(job.filename) == null) {
+                        Log.w(TAG, "Recording ${job.filename} is gone; dropping action job")
+                        deleteJob(job.filename)
+                    } else if (!transcriptFile(job.filename).exists()) {
+                        // The transcript was removed while the job waited, so
+                        // there is nothing to run actions against; transcribe
+                        // again instead of dropping the job.
+                        Log.w(TAG, "No transcript for ${job.filename}; requeuing transcription")
+                        synchronized(lock) {
+                            // The job (or recording) can be deleted between the
+                            // checks above and this write; do not resurrect it.
+                            if (jobFile(job.filename).exists()) {
+                                writeJobLocked(job.filename, PipelineStage.TRANSCRIBE)
+                            } else {
+                                Log.d(TAG, "Job for ${job.filename} is gone; not requeuing transcription")
+                            }
+                        }
+                    } else {
+                        advanceAfterTranscription(job.filename)
+                    }
+                }
                 PipelineStage.WEBHOOK -> attemptWebhook(job)
             }
         }
@@ -260,7 +286,7 @@ class PipelineQueue(
         // A crash between saving the transcript and advancing the job leaves a
         // TRANSCRIBE job whose transcript is already on disk. Re-running the API
         // would spend a request and re-run local actions, so advance by pattern
-        // alone exactly as a manual retry would.
+        // alone instead.
         if (transcriptFile(job.filename).exists()) {
             Log.i(TAG, "[action] transcript already present, skipping local actions")
             advanceByRegexOnly(job.filename)
@@ -353,6 +379,9 @@ class PipelineQueue(
         }
 
         synchronized(lock) {
+            // The recording (and its job) can be deleted while the action phase
+            // runs; do not resurrect a job for a gone recording.
+            if (!jobFile(filename).exists()) return
             if (webhookActionIds.isNotEmpty()) {
                 writeJobLocked(filename, PipelineStage.WEBHOOK, webhookActionIds)
             } else {
@@ -417,9 +446,10 @@ class PipelineQueue(
 
     /**
      * Collects the WEBHOOK ids a regex-only plan would deliver. Used when the
-     * runner must not run: a manual retry, or a crash in the action phase. The
-     * matcher already stops at the first `stop` hit, so a blocking
-     * ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA still hides the webhooks after it.
+     * runner must not run: advancing a job whose transcript is already on disk
+     * after a crash, or a failure in the action phase. The matcher already stops
+     * at the first `stop` hit, so a blocking ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA
+     * still hides the webhooks after it.
      */
     private fun collectWebhookIdsByRegex(transcript: String, actions: List<Action>): List<String> {
         val plan = ActionMatcher.plan(transcript, actions)
@@ -502,12 +532,15 @@ class PipelineQueue(
 
     /**
      * Persists the still-pending ids, deleting the job when none remain.
-     * Returns false without writing when the job was removed (the recording was
-     * deleted) while the request was in flight, so it is not recreated.
+     * Returns false without writing unless the stored job is still a WEBHOOK job
+     * for this recording: a manual retry replaces it with RUN_ACTIONS while a
+     * request is in flight, and the delivery must then leave that retry alone
+     * rather than overwrite or delete it (or resurrect a job removed with its
+     * recording).
      */
     private fun persistWebhookIds(filename: String, ids: List<String>): Boolean {
         synchronized(lock) {
-            if (!jobFile(filename).exists()) return false
+            if (jobStageLocked(filename) != PipelineStage.WEBHOOK) return false
             if (ids.isEmpty()) {
                 deleteJobLocked(filename)
             } else {
@@ -521,14 +554,29 @@ class PipelineQueue(
     private fun jobStillExists(filename: String): Boolean =
         synchronized(lock) { jobFile(filename).exists() }
 
+    /** The stage of the stored job for [filename], or null when absent/unreadable. */
+    private fun jobStageLocked(filename: String): PipelineStage? {
+        val file = jobFile(filename)
+        if (!file.exists()) return null
+        return try {
+            val json = JSONObject(file.readText())
+            PipelineStage.entries.firstOrNull { it.name == json.optString(FIELD_STAGE) }
+        } catch (exception: JSONException) {
+            Log.w(TAG, "Malformed pipeline job ${file.name}", exception)
+            null
+        }
+    }
+
     private fun ensureJobLocked(filename: String): Boolean {
         val transcript = transcriptFile(filename)
         if (!transcript.exists()) {
             writeJobLocked(filename, PipelineStage.TRANSCRIBE)
             return true
         }
-        // A manual retry never runs the alarms again, so it plans by pattern
-        // only; the runner is left for a successful transcription.
+        // This is the crash-recovery path for a job whose transcript is already
+        // on disk, so it plans by pattern only: the action phase already ran (or
+        // will run) on the real transcription, and running it here could re-fire
+        // an alarm.
         val webhookActionIds = collectWebhookIdsByRegex(transcript.readText(), settings.actions)
         return if (webhookActionIds.isNotEmpty()) {
             writeJobLocked(filename, PipelineStage.WEBHOOK, webhookActionIds)
