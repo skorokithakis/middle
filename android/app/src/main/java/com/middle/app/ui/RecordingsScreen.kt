@@ -252,7 +252,7 @@ fun RecordingsScreen(
                             isPending = recording.audioFile.name in pendingFilenames,
                             onTogglePlayback = { viewModel.togglePlayback(recording) },
                             onDelete = { viewModel.deleteRecording(recording) },
-                            showRetry = !recording.hasTranscript || viewModel.webhookEnabled,
+                            showRetry = !recording.hasTranscript || viewModel.anyActionEnabled,
                             onRetry = { viewModel.retryPipeline(recording) },
                         )
                     }

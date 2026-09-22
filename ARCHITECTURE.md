@@ -179,9 +179,9 @@ backoff and outcome rules (unit-tested by `PipelinePolicyTest.kt`).
 
 Key details:
 - One JSON job file per recording under `filesDir/pipeline/` (survives process
-  death). The file stores the stage: `TRANSCRIBE` or `WEBHOOK`, and for a
-  `WEBHOOK` job the ordered `webhookActionIds` still to deliver. The old
-  `filesDir/webhooks/` format is discarded on startup, not migrated.
+  death). The file stores the stage: `TRANSCRIBE`, `RUN_ACTIONS` or `WEBHOOK`,
+  and for a `WEBHOOK` job the ordered `webhookActionIds` still to deliver. The
+  old `filesDir/webhooks/` format is discarded on startup, not migrated.
 - A saved recording is enqueued at `TRANSCRIBE`; a successful transcription runs
   the action phase (see Actions), then advances the job to `WEBHOOK` with the
   matched WEBHOOK action ids, or deletes the job when none matched.
@@ -190,9 +190,15 @@ Key details:
   overtake it; an id whose action was deleted, disabled or blanked is skipped.
   If the job file was removed (recording deleted), delivery stops without
   recreating it.
-- A recording whose transcript already exists (manual retry, or a job resumed
-  after a crash) is planned by pattern only and advanced or deleted from that
-  match: no action runs, so an alarm is never re-fired.
+- A manual retry always replans from the recording: a recording with no
+  transcript is queued at `TRANSCRIBE`, and one whose transcript already exists
+  is queued at `RUN_ACTIONS`, which re-runs the full action phase and then
+  advances to `WEBHOOK` exactly as a successful transcription would. An existing
+  `WEBHOOK` job is replaced, so an ALARM re-fires. `RUN_ACTIONS` rewrites itself
+  as `TRANSCRIBE` when the transcript is missing at run time, and drops the job
+  when the recording is gone. A `TRANSCRIBE` job whose transcript is already on
+  disk (a crash between saving it and advancing the job) is still planned by
+  pattern only, so a crash cannot re-fire an alarm.
 - Backoff is in memory, not persisted: starts at 2 s, doubles per failed
   attempt, capped at 30 minutes. A restart resets per-job state.
 - A missing API key is not an attempt: it waits a fixed 60 s recheck instead of
@@ -304,11 +310,12 @@ Key details:
   kept and planning continues. If the phase still throws outside a single hit,
   it falls back to collecting WEBHOOK ids by pattern alone; with no matching
   WEBHOOK action the job is deleted.
-- Manual retry never runs an action. An existing WEBHOOK job keeps its persisted
-  `webhookActionIds` and is only made due now; with no job, `ensureJobLocked`
-  plans by pattern only. `$rest` is recomputed at delivery with
-  `ActionMatcher.restFor()`, so a stopped transcript cannot leak its webhook and
-  an alarm cannot fire twice.
+- A manual retry runs the action phase again from the existing transcript, so an
+  ALARM re-fires and webhooks are collected anew; it never re-transcribes. The
+  retry only writes the job file and wakes the worker, so the runner never blocks
+  the main thread. A `TRANSCRIBE` job whose transcript is already on disk (a
+  crash between saving it and advancing the job) is still planned by pattern
+  only. `$rest` is recomputed at delivery with `ActionMatcher.restFor()`.
 
 ---
 
