@@ -243,8 +243,9 @@ Key details:
   `stop` flag. `WEBHOOK` actions also carry `webhookUrl` and
   `webhookBodyTemplate`; `$rest` is the transcript after that pattern's match,
   trimmed (empty for the `.*` catch-all). `FAKE_CALL` actions also carry the
-  caller `callerName` and `callerNumber` (both serialized always and read as
-  empty when absent). `PLAY_MEDIA` actions carry no extra fields: their query is
+  caller `callerName`, `callerNumber` and the spoken `message` (all serialized
+  always and read as empty when absent). `PLAY_MEDIA` actions carry no extra
+  fields: their query is
   `$rest`. Its default pattern is `^play\b`, anchored at the start so a normal
   note like "I will play tennis" does not fire.
 - Evaluation happens exactly once, in
@@ -288,10 +289,20 @@ Key details:
   which the action logs, turns into an info notification and treats as no
   result. Otherwise
   `TelecomManager.addNewIncomingCall` is called with the `tel:` address from
-  `callerNumber` and the caller name in a custom extra, and the system dialer
-  shows its own incoming-call screen with the user's ringtone and DND rules. No
-  overlay permission is needed. The connection rings for 45 s, then disconnects
-  as missed; answering activates it, rejecting or disconnecting ends it.
+  `callerNumber` and the caller name and spoken `message` in custom extras, and
+  the system dialer shows its own incoming-call screen with the user's ringtone
+  and DND rules. No overlay permission is needed. The connection rings for 45 s,
+  then disconnects as missed; answering activates it, rejecting or disconnecting
+  ends it.
+- An answered FAKE_CALL speaks its `message` through `android.speech.tts.TextToSpeech`
+  as call audio. The engine is created when the connection starts ringing (so it
+  is initialised by the time the user answers) and is set to
+  `USAGE_VOICE_COMMUNICATION`/`CONTENT_TYPE_SPEECH`. On answer, after a 1 s
+  delay, the message's non-blank lines are queued in order with a 2 s silent
+  pause after each (4 s after the last), and the final pause's completion queues
+  the next cycle, so it repeats until the call ends. A blank message or a failed
+  TTS init stays silent and is logged. Any reject, disconnect or missed-call
+  timeout stops and shuts the engine down and drops pending callbacks.
 - A PLAY_MEDIA resolves `$rest` through Spotify. "Liked songs" and "my liked
   songs" (case-insensitive) skip the search and open the fixed
   `spotify:collection:tracks` URI, labelled "Liked Songs"; a client-credentials
@@ -443,7 +454,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. A header card always shows the selected device's sync status (a fixed `Index` label for the ring) and its battery voltage. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
-| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call or play-media action. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
+| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a multiline message field (prefilled with filler lines), a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call or play-media action. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), Spotify Client ID and Client Secret (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
 | Assistant | `ASSIST` / `VOICE_COMMAND` | Not a nav route: a dialog-style card shown when the system assistant is triggered (long-press power). Shows "Listening…" and elapsed time with a Stop button; Silero VAD ends the recording when the speaker stops, then it saves through the same pipeline. Has no launcher icon and is excluded from recents. |

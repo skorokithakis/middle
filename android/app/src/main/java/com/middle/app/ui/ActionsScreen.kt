@@ -571,6 +571,15 @@ private fun FakeCallFields(
         label = { Text(stringResource(R.string.actions_fake_call_caller_number_label)) },
     )
     Spacer(modifier = Modifier.height(8.dp))
+    OutlinedTextField(
+        value = action.message,
+        onValueChange = { onUpdate(action.copy(message = it)) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 96.dp),
+        label = { Text(stringResource(R.string.actions_fake_call_message_label)) },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
     OutlinedButton(onClick = onChooseContact) {
         Text(stringResource(R.string.actions_fake_call_choose_contact))
     }
@@ -639,6 +648,7 @@ private fun ClickActionRow(
     onSelect: (Action?) -> Unit,
     onChooseContact: (String) -> Unit,
 ) {
+    val fakeCallMessage = stringResource(R.string.actions_fake_call_default_message)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -657,7 +667,7 @@ private fun ClickActionRow(
                 selectedLabel = clickActionLabel(action),
                 options = ClickChoice.entries,
                 optionLabel = { clickChoiceLabel(it) },
-                onSelect = { onSelect(actionForClickChoice(action, it)) },
+                onSelect = { onSelect(actionForClickChoice(action, it, fakeCallMessage)) },
             )
         }
         if (action != null && action.type == ActionType.FAKE_CALL) {
@@ -701,21 +711,30 @@ private fun isCurrentClickChoice(action: Action?, choice: ClickChoice): Boolean 
  * and returns [current] so edited fields survive; any other choice builds a
  * fresh action. A click carries no transcript and has no chain, so its action
  * is always enabled, has no pattern and never stops; a webhook gets the default
- * body template so it is usable as soon as it is created.
+ * body template so it is usable as soon as it is created, and a fake call gets
+ * [fakeCallMessage] so it speaks a filler line out of the box.
  */
-internal fun actionForClickChoice(current: Action?, choice: ClickChoice): Action? {
+internal fun actionForClickChoice(
+    current: Action?,
+    choice: ClickChoice,
+    fakeCallMessage: String = "",
+): Action? {
     if (isCurrentClickChoice(current, choice)) return current
     return when (choice) {
         ClickChoice.NONE -> null
         ClickChoice.PLAY_PAUSE -> clickAction(ActionType.MEDIA_KEY, MediaKey.PLAY_PAUSE)
         ClickChoice.NEXT -> clickAction(ActionType.MEDIA_KEY, MediaKey.NEXT)
         ClickChoice.PREVIOUS -> clickAction(ActionType.MEDIA_KEY, MediaKey.PREVIOUS)
-        ClickChoice.FAKE_CALL -> clickAction(ActionType.FAKE_CALL)
+        ClickChoice.FAKE_CALL -> clickAction(ActionType.FAKE_CALL, message = fakeCallMessage)
         ClickChoice.WEBHOOK -> clickAction(ActionType.WEBHOOK)
     }
 }
 
-private fun clickAction(type: ActionType, mediaKey: MediaKey = MediaKey.PLAY_PAUSE) = Action(
+private fun clickAction(
+    type: ActionType,
+    mediaKey: MediaKey = MediaKey.PLAY_PAUSE,
+    message: String = "",
+) = Action(
     id = UUID.randomUUID().toString(),
     enabled = true,
     type = type,
@@ -728,6 +747,8 @@ private fun clickAction(type: ActionType, mediaKey: MediaKey = MediaKey.PLAY_PAU
     } else {
         AppSettings.DEFAULT_WEBHOOK_BODY_TEMPLATE
     },
+    // Only a FAKE_CALL speaks; the other click slots never read the message.
+    message = if (type == ActionType.FAKE_CALL) message else "",
     mediaKey = mediaKey,
 )
 

@@ -71,11 +71,28 @@ class ClickActionChoiceTest {
         assertSame(webhook, actionForClickChoice(webhook, ClickChoice.WEBHOOK))
 
         val fakeCall = requireNotNull(actionForClickChoice(null, ClickChoice.FAKE_CALL))
-            .copy(callerName = "Ada Lovelace", callerNumber = "+15551234567")
+            .copy(
+                callerName = "Ada Lovelace",
+                callerNumber = "+15551234567",
+                message = "Custom message",
+            )
         assertSame(fakeCall, actionForClickChoice(fakeCall, ClickChoice.FAKE_CALL))
 
         val playPause = requireNotNull(actionForClickChoice(null, ClickChoice.PLAY_PAUSE))
         assertSame(playPause, actionForClickChoice(playPause, ClickChoice.PLAY_PAUSE))
+    }
+
+    @Test
+    fun fakeCallClickSlotUsesTheGivenMessageAndOthersStayEmpty() {
+        val fakeCall = requireNotNull(
+            actionForClickChoice(null, ClickChoice.FAKE_CALL, fakeCallMessage = "Filler line"),
+        )
+        assertEquals("Filler line", fakeCall.message)
+
+        val webhook = requireNotNull(
+            actionForClickChoice(null, ClickChoice.WEBHOOK, fakeCallMessage = "Filler line"),
+        )
+        assertEquals("", webhook.message)
     }
 
     @Test

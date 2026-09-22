@@ -68,6 +68,7 @@ class ActionTest {
         assertFalse(json.has("suppressWebhook"))
         assertTrue(json.has("webhookUrl"))
         assertTrue(json.has("webhookBodyTemplate"))
+        assertTrue(json.has("message"))
     }
 
     @Test
@@ -153,8 +154,29 @@ class ActionTest {
             stop = true,
             callerName = "Ada Lovelace",
             callerNumber = "+15551234567",
+            message = "Hey, it's me.\nCall me back.",
         )
         assertEquals(listOf(action), Action.fromJson(Action.toJson(listOf(action))))
+    }
+
+    @Test
+    fun absentMessageReadsAsEmptyDefault() {
+        val json = """
+            [
+              {"id":"a1","enabled":true,"type":"FAKE_CALL","pattern":"x","stop":true}
+            ]
+        """.trimIndent()
+        assertEquals("", Action.fromJson(json).single().message)
+    }
+
+    @Test
+    fun nonStringMessageIsMalformed() {
+        val json = """
+            [
+              {"id":"a1","enabled":true,"type":"FAKE_CALL","pattern":"x","stop":true,"message":42}
+            ]
+        """.trimIndent()
+        assertTrue(Action.fromJson(json).isEmpty())
     }
 
     @Test

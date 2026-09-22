@@ -5,6 +5,7 @@ import android.provider.CalendarContract
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.middle.app.R
 import com.middle.app.data.Action
 import com.middle.app.data.ActionType
 import com.middle.app.data.Settings
@@ -71,6 +72,12 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
             stop = type != ActionType.WEBHOOK,
             webhookBodyTemplate = if (type == ActionType.WEBHOOK) {
                 Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE
+            } else {
+                ""
+            },
+            // A new fake call starts with a filler message the user can replace.
+            message = if (type == ActionType.FAKE_CALL) {
+                getApplication<Application>().getString(R.string.actions_fake_call_default_message)
             } else {
                 ""
             },

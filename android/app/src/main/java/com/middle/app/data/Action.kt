@@ -36,6 +36,8 @@ data class Action(
     val webhookBodyTemplate: String = "",
     val callerName: String = "",
     val callerNumber: String = "",
+    // The fake call speaks this; blank means a silent call.
+    val message: String = "",
     val mediaKey: MediaKey = MediaKey.PLAY_PAUSE,
 ) {
     private fun toJsonObject(): JSONObject = JSONObject().apply {
@@ -48,6 +50,7 @@ data class Action(
         put(FIELD_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
         put(FIELD_CALLER_NAME, callerName)
         put(FIELD_CALLER_NUMBER, callerNumber)
+        put(FIELD_MESSAGE, message)
         put(FIELD_MEDIA_KEY, mediaKey.name)
     }
 
@@ -84,6 +87,7 @@ data class Action(
         private const val FIELD_WEBHOOK_BODY_TEMPLATE = "webhookBodyTemplate"
         private const val FIELD_CALLER_NAME = "callerName"
         private const val FIELD_CALLER_NUMBER = "callerNumber"
+        private const val FIELD_MESSAGE = "message"
         private const val FIELD_MEDIA_KEY = "mediaKey"
 
         fun toJson(actions: List<Action>): String =
@@ -181,9 +185,10 @@ data class Action(
                 if (json.has(FIELD_WEBHOOK_BODY_TEMPLATE)) json.opt(FIELD_WEBHOOK_BODY_TEMPLATE) else ""
             val callerName = if (json.has(FIELD_CALLER_NAME)) json.opt(FIELD_CALLER_NAME) else ""
             val callerNumber = if (json.has(FIELD_CALLER_NUMBER)) json.opt(FIELD_CALLER_NUMBER) else ""
+            val message = if (json.has(FIELD_MESSAGE)) json.opt(FIELD_MESSAGE) else ""
             if (enabled !is Boolean || pattern !is String || stop !is Boolean ||
                 webhookUrl !is String || webhookBodyTemplate !is String ||
-                callerName !is String || callerNumber !is String
+                callerName !is String || callerNumber !is String || message !is String
             ) {
                 Log.w(TAG, "Skipping action $id: malformed field")
                 return null
@@ -214,6 +219,7 @@ data class Action(
                 webhookBodyTemplate = webhookBodyTemplate,
                 callerName = callerName,
                 callerNumber = callerNumber,
+                message = message,
                 mediaKey = mediaKey,
             )
         }

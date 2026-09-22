@@ -42,6 +42,14 @@
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
 
+    <!-- Package visibility for TextToSpeech on Android 11+: without this the
+         platform cannot find the TTS engine for a fake call's message. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".MiddleApplication"
         android:allowBackup="true"

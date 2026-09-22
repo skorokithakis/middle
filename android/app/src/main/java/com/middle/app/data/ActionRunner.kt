@@ -224,6 +224,7 @@ class ActionRunner(context: Context) {
                 Uri.fromParts("tel", action.callerNumber.trim(), null),
             )
             putString(FakeCallAccount.EXTRA_CALLER_NAME, action.callerName)
+            putString(FakeCallAccount.EXTRA_MESSAGE, action.message)
         }
         return try {
             telecomManager.addNewIncomingCall(FakeCallAccount.handle(appContext), extras)

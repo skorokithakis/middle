@@ -30,6 +30,9 @@ object FakeCallAccount {
     /** Extra key for the caller name shown on the incoming-call screen. */
     const val EXTRA_CALLER_NAME = "com.middle.app.extra.FAKE_CALL_CALLER_NAME"
 
+    /** Extra key for the message the answered call speaks through TTS. */
+    const val EXTRA_MESSAGE = "com.middle.app.extra.FAKE_CALL_MESSAGE"
+
     private const val ACCOUNT_ID = "middle_fake_call"
 
     /** The stable handle identifying Middle's account inside Telecom. */

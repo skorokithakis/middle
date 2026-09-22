@@ -48,6 +48,8 @@
     <string name="actions_webhook_body_helper">Variables: $transcript and $rest</string>
     <string name="actions_fake_call_caller_name_label">Caller name</string>
     <string name="actions_fake_call_caller_number_label">Caller number</string>
+    <string name="actions_fake_call_message_label">Message</string>
+    <string name="actions_fake_call_default_message">Hey, it\'s me.\nSorry to bother you, do you have a minute?\nSomething came up and I really need you here.\nCan you come over now? It\'s urgent.</string>
     <string name="actions_fake_call_choose_contact">Choose contact</string>
     <string name="actions_overlay_message">Alarms need the \"Display over other apps\" permission to be set hands-free.</string>
     <string name="actions_overlay_grant">Allow</string>
