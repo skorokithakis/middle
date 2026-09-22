@@ -68,12 +68,17 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.middle.app.R
 import com.middle.app.data.Action
 import com.middle.app.data.ActionType
+import com.middle.app.data.MediaKey
+// Aliased because android.provider.Settings is already imported for the overlay
+// permission check.
+import com.middle.app.data.Settings as AppSettings
 import com.middle.app.telecom.FakeCallAccount
 import com.middle.app.viewmodel.ActionsViewModel
 import com.middle.app.viewmodel.CalendarInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 private const val TAG = "ActionsScreen"
 
@@ -84,6 +89,8 @@ fun ActionsScreen(
     onOpenDrawer: () -> Unit,
 ) {
     val actions by viewModel.actions.collectAsState()
+    val clickActions by viewModel.clickActions.collectAsState()
+    val deviceType by viewModel.deviceType.collectAsState()
     val selectedCalendarName by viewModel.selectedCalendarName.collectAsState()
     val calendars by viewModel.calendars.collectAsState()
     val context = LocalContext.current
@@ -145,9 +152,22 @@ fun ActionsScreen(
         scope.launch {
             val contact = withContext(Dispatchers.IO) { readContact(context, uri) }
                 ?: return@launch
-            val action = viewModel.actions.value.firstOrNull { it.id == actionId } ?: return@launch
-            viewModel.updateAction(
-                action.copy(callerName = contact.first, callerNumber = contact.second),
+            // The picker is opened from both the action list and a ring click
+            // slot, so the id selects whichever list holds it. A click slot is
+            // written back through setClickAction instead of updateAction.
+            val action = viewModel.actions.value.firstOrNull { it.id == actionId }
+            if (action != null) {
+                viewModel.updateAction(
+                    action.copy(callerName = contact.first, callerNumber = contact.second),
+                )
+                return@launch
+            }
+            val clickEntry = viewModel.clickActions.value.entries
+                .firstOrNull { it.value.id == actionId }
+                ?: return@launch
+            viewModel.setClickAction(
+                clickEntry.key,
+                clickEntry.value.copy(callerName = contact.first, callerNumber = contact.second),
             )
         }
     }
@@ -245,6 +265,17 @@ fun ActionsScreen(
                         onChooseContact = { chooseContact(action.id) },
                     )
                 }
+                if (deviceType == AppSettings.DEVICE_TYPE_RING) {
+                    item {
+                        RingButtonSection(
+                            clickActions = clickActions,
+                            onSetClickAction = { count, action ->
+                                viewModel.setClickAction(count, action)
+                            },
+                            onChooseContact = chooseContact,
+                        )
+                    }
+                }
             }
         }
     }
@@ -274,6 +305,7 @@ private fun actionTypeLabel(type: ActionType): String = when (type) {
     ActionType.WEBHOOK -> stringResource(R.string.actions_type_webhook)
     ActionType.FAKE_CALL -> stringResource(R.string.actions_type_fake_call)
     ActionType.PLAY_MEDIA -> stringResource(R.string.actions_type_play_media)
+    ActionType.MEDIA_KEY -> stringResource(R.string.actions_type_media_key)
 }
 
 /** Reads the name and number of the single row the contact picker returned. */
@@ -412,7 +444,6 @@ private fun ActionCard(
     onMoveDown: () -> Unit,
     onChooseContact: () -> Unit,
 ) {
-    val context = LocalContext.current
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -475,60 +506,294 @@ private fun ActionCard(
             }
             if (action.type == ActionType.WEBHOOK) {
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = action.webhookUrl,
-                    onValueChange = { onUpdate(action.copy(webhookUrl = it)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text(stringResource(R.string.actions_webhook_url_label)) },
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = action.webhookBodyTemplate,
-                    onValueChange = { onUpdate(action.copy(webhookBodyTemplate = it)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(stringResource(R.string.actions_webhook_body_label)) },
-                    supportingText = { Text(stringResource(R.string.actions_webhook_body_helper)) },
-                )
+                WebhookFields(action = action, onUpdate = onUpdate)
             }
             if (action.type == ActionType.FAKE_CALL) {
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = action.callerName,
-                    onValueChange = { onUpdate(action.copy(callerName = it)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text(stringResource(R.string.actions_fake_call_caller_name_label)) },
+                FakeCallFields(
+                    action = action,
+                    onUpdate = onUpdate,
+                    onChooseContact = onChooseContact,
                 )
+            }
+            if (action.type == ActionType.MEDIA_KEY) {
                 Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = action.callerNumber,
-                    onValueChange = { onUpdate(action.copy(callerNumber = it)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text(stringResource(R.string.actions_fake_call_caller_number_label)) },
+                MediaKeySelector(
+                    selected = action.mediaKey,
+                    onSelect = { onUpdate(action.copy(mediaKey = it)) },
                 )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(onClick = onChooseContact) {
-                    Text(stringResource(R.string.actions_fake_call_choose_contact))
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = stringResource(R.string.actions_fake_call_account_message),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedButton(
+            }
+        }
+    }
+}
+
+/** The URL and body template fields a WEBHOOK action needs. */
+@Composable
+private fun WebhookFields(action: Action, onUpdate: (Action) -> Unit) {
+    OutlinedTextField(
+        value = action.webhookUrl,
+        onValueChange = { onUpdate(action.copy(webhookUrl = it)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text(stringResource(R.string.actions_webhook_url_label)) },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    OutlinedTextField(
+        value = action.webhookBodyTemplate,
+        onValueChange = { onUpdate(action.copy(webhookBodyTemplate = it)) },
+        modifier = Modifier.fillMaxWidth(),
+        label = { Text(stringResource(R.string.actions_webhook_body_label)) },
+        supportingText = { Text(stringResource(R.string.actions_webhook_body_helper)) },
+    )
+}
+
+/** The caller fields and calling-accounts link a FAKE_CALL action needs. */
+@Composable
+private fun FakeCallFields(
+    action: Action,
+    onUpdate: (Action) -> Unit,
+    onChooseContact: () -> Unit,
+) {
+    val context = LocalContext.current
+    OutlinedTextField(
+        value = action.callerName,
+        onValueChange = { onUpdate(action.copy(callerName = it)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text(stringResource(R.string.actions_fake_call_caller_name_label)) },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    OutlinedTextField(
+        value = action.callerNumber,
+        onValueChange = { onUpdate(action.copy(callerNumber = it)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        label = { Text(stringResource(R.string.actions_fake_call_caller_number_label)) },
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    OutlinedButton(onClick = onChooseContact) {
+        Text(stringResource(R.string.actions_fake_call_choose_contact))
+    }
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(
+        text = stringResource(R.string.actions_fake_call_account_message),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(modifier = Modifier.height(8.dp))
+    OutlinedButton(
+        onClick = {
+            // Register first so the Middle toggle exists on the screen the
+            // intent opens.
+            FakeCallAccount.register(context)
+            FakeCallAccount.openSettings(context)
+        },
+    ) {
+        Text(stringResource(R.string.actions_fake_call_account_open))
+    }
+}
+
+/** The three click slots the ring button exposes. */
+private val CLICK_COUNTS = listOf(1, 2, 3)
+
+/**
+ * The ring button's per click-count bindings. It is only shown for the ring,
+ * because a pendant has no button to click.
+ */
+@Composable
+private fun RingButtonSection(
+    clickActions: Map<Int, Action>,
+    onSetClickAction: (Int, Action?) -> Unit,
+    onChooseContact: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Text(
+            text = stringResource(R.string.actions_ring_section_title),
+            style = MaterialTheme.typography.titleSmall,
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        CLICK_COUNTS.forEach { count ->
+            val label = when (count) {
+                1 -> stringResource(R.string.actions_click_single)
+                2 -> stringResource(R.string.actions_click_double)
+                else -> stringResource(R.string.actions_click_triple)
+            }
+            ClickActionRow(
+                label = label,
+                action = clickActions[count],
+                onSelect = { onSetClickAction(count, it) },
+                onChooseContact = onChooseContact,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ClickActionRow(
+    label: String,
+    action: Action?,
+    onSelect: (Action?) -> Unit,
+    onChooseContact: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
+            )
+            DropdownSelector(
+                selectedLabel = clickActionLabel(action),
+                options = ClickChoice.entries,
+                optionLabel = { clickChoiceLabel(it) },
+                onSelect = { onSelect(actionForClickChoice(action, it)) },
+            )
+        }
+        if (action != null && action.type == ActionType.FAKE_CALL) {
+            Spacer(modifier = Modifier.height(8.dp))
+            FakeCallFields(
+                action = action,
+                onUpdate = { onSelect(it) },
+                onChooseContact = { onChooseContact(action.id) },
+            )
+        }
+        if (action != null && action.type == ActionType.WEBHOOK) {
+            Spacer(modifier = Modifier.height(8.dp))
+            WebhookFields(action = action, onUpdate = { onSelect(it) })
+        }
+    }
+}
+
+/** The choice a click slot's dropdown offers. NONE unbinds the click. */
+internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK }
+
+/**
+ * True when [action] already stores [choice], so re-selecting it is a no-op.
+ * Without this a re-selection would replace the action with a fresh id and drop
+ * any edited webhook URL/body or caller fields.
+ */
+private fun isCurrentClickChoice(action: Action?, choice: ClickChoice): Boolean = when (choice) {
+    ClickChoice.NONE -> action == null
+    ClickChoice.PLAY_PAUSE ->
+        action?.type == ActionType.MEDIA_KEY && action.mediaKey == MediaKey.PLAY_PAUSE
+    ClickChoice.NEXT ->
+        action?.type == ActionType.MEDIA_KEY && action.mediaKey == MediaKey.NEXT
+    ClickChoice.PREVIOUS ->
+        action?.type == ActionType.MEDIA_KEY && action.mediaKey == MediaKey.PREVIOUS
+    ClickChoice.FAKE_CALL -> action?.type == ActionType.FAKE_CALL
+    ClickChoice.WEBHOOK -> action?.type == ActionType.WEBHOOK
+}
+
+/**
+ * The action a click slot stores when [choice] is selected from [current], or
+ * null for [ClickChoice.NONE]. Selecting the choice already stored is a no-op
+ * and returns [current] so edited fields survive; any other choice builds a
+ * fresh action. A click carries no transcript and has no chain, so its action
+ * is always enabled, has no pattern and never stops; a webhook gets the default
+ * body template so it is usable as soon as it is created.
+ */
+internal fun actionForClickChoice(current: Action?, choice: ClickChoice): Action? {
+    if (isCurrentClickChoice(current, choice)) return current
+    return when (choice) {
+        ClickChoice.NONE -> null
+        ClickChoice.PLAY_PAUSE -> clickAction(ActionType.MEDIA_KEY, MediaKey.PLAY_PAUSE)
+        ClickChoice.NEXT -> clickAction(ActionType.MEDIA_KEY, MediaKey.NEXT)
+        ClickChoice.PREVIOUS -> clickAction(ActionType.MEDIA_KEY, MediaKey.PREVIOUS)
+        ClickChoice.FAKE_CALL -> clickAction(ActionType.FAKE_CALL)
+        ClickChoice.WEBHOOK -> clickAction(ActionType.WEBHOOK)
+    }
+}
+
+private fun clickAction(type: ActionType, mediaKey: MediaKey = MediaKey.PLAY_PAUSE) = Action(
+    id = UUID.randomUUID().toString(),
+    enabled = true,
+    type = type,
+    pattern = "",
+    stop = false,
+    // A click slot is a FAKE_CALL or a WEBHOOK; the default body keeps a new
+    // webhook usable immediately. A MEDIA_KEY slot never reads the template.
+    webhookBodyTemplate = if (type == ActionType.MEDIA_KEY) {
+        ""
+    } else {
+        AppSettings.DEFAULT_WEBHOOK_BODY_TEMPLATE
+    },
+    mediaKey = mediaKey,
+)
+
+@Composable
+private fun clickActionLabel(action: Action?): String = when {
+    action == null -> stringResource(R.string.actions_click_nothing)
+    action.type == ActionType.MEDIA_KEY -> mediaKeyLabel(action.mediaKey)
+    else -> actionTypeLabel(action.type)
+}
+
+@Composable
+private fun clickChoiceLabel(choice: ClickChoice): String = when (choice) {
+    ClickChoice.NONE -> stringResource(R.string.actions_click_nothing)
+    ClickChoice.PLAY_PAUSE -> mediaKeyLabel(MediaKey.PLAY_PAUSE)
+    ClickChoice.NEXT -> mediaKeyLabel(MediaKey.NEXT)
+    ClickChoice.PREVIOUS -> mediaKeyLabel(MediaKey.PREVIOUS)
+    ClickChoice.FAKE_CALL -> actionTypeLabel(ActionType.FAKE_CALL)
+    ClickChoice.WEBHOOK -> actionTypeLabel(ActionType.WEBHOOK)
+}
+
+@Composable
+private fun mediaKeyLabel(mediaKey: MediaKey): String = when (mediaKey) {
+    MediaKey.PLAY_PAUSE -> stringResource(R.string.actions_media_key_play_pause)
+    MediaKey.NEXT -> stringResource(R.string.actions_media_key_next)
+    MediaKey.PREVIOUS -> stringResource(R.string.actions_media_key_previous)
+}
+
+@Composable
+private fun MediaKeySelector(selected: MediaKey, onSelect: (MediaKey) -> Unit) {
+    Column {
+        Text(
+            text = stringResource(R.string.actions_media_key_label),
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        DropdownSelector(
+            selectedLabel = mediaKeyLabel(selected),
+            options = MediaKey.entries,
+            optionLabel = { mediaKeyLabel(it) },
+            onSelect = onSelect,
+        )
+    }
+}
+
+/** A button that shows [selectedLabel] and lets the user pick one of [options]. */
+@Composable
+private fun <T> DropdownSelector(
+    selectedLabel: String,
+    options: List<T>,
+    optionLabel: @Composable (T) -> String,
+    onSelect: (T) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        OutlinedButton(onClick = { expanded = true }) {
+            Text(selectedLabel)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(optionLabel(option)) },
                     onClick = {
-                        // Register first so the Middle toggle exists on the
-                        // screen the intent opens.
-                        FakeCallAccount.register(context)
-                        FakeCallAccount.openSettings(context)
+                        expanded = false
+                        onSelect(option)
                     },
-                ) {
-                    Text(stringResource(R.string.actions_fake_call_account_open))
-                }
+                )
             }
         }
     }

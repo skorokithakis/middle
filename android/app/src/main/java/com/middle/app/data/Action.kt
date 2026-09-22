@@ -11,6 +11,14 @@ enum class ActionType {
     WEBHOOK,
     FAKE_CALL,
     PLAY_MEDIA,
+    MEDIA_KEY,
+}
+
+/** The transport key a MEDIA_KEY action sends to the system. */
+enum class MediaKey {
+    PLAY_PAUSE,
+    NEXT,
+    PREVIOUS,
 }
 
 /**
@@ -28,6 +36,7 @@ data class Action(
     val webhookBodyTemplate: String = "",
     val callerName: String = "",
     val callerNumber: String = "",
+    val mediaKey: MediaKey = MediaKey.PLAY_PAUSE,
 ) {
     private fun toJsonObject(): JSONObject = JSONObject().apply {
         put(FIELD_ID, id)
@@ -39,6 +48,7 @@ data class Action(
         put(FIELD_WEBHOOK_BODY_TEMPLATE, webhookBodyTemplate)
         put(FIELD_CALLER_NAME, callerName)
         put(FIELD_CALLER_NUMBER, callerNumber)
+        put(FIELD_MEDIA_KEY, mediaKey.name)
     }
 
     companion object {
@@ -51,6 +61,15 @@ data class Action(
         // Anchored at the start so a normal note like "I will play tennis"
         // does not fire.
         const val DEFAULT_PLAY_MEDIA_PATTERN = """^play\b"""
+        // Anchored at the start so a normal note like "I will resume work" does
+        // not fire. Pause/resume only: a new action defaults to PLAY_PAUSE, so
+        // matching "next track"/"previous song" here would toggle playback
+        // instead of skipping. Skip actions need an explicit pattern and key.
+        const val DEFAULT_MEDIA_KEY_PATTERN = """^(pause|resume)\b"""
+
+        // The ring button supports one, two or three clicks.
+        private const val MIN_CLICK_COUNT = 1
+        private const val MAX_CLICK_COUNT = 3
 
         private const val TAG = "Action"
         private const val FIELD_ID = "id"
@@ -65,9 +84,52 @@ data class Action(
         private const val FIELD_WEBHOOK_BODY_TEMPLATE = "webhookBodyTemplate"
         private const val FIELD_CALLER_NAME = "callerName"
         private const val FIELD_CALLER_NUMBER = "callerNumber"
+        private const val FIELD_MEDIA_KEY = "mediaKey"
 
         fun toJson(actions: List<Action>): String =
             JSONArray().apply { actions.forEach { put(it.toJsonObject()) } }.toString()
+
+        /**
+         * Serializes the per-click-count map as one JSON object keyed by the
+         * click count, so [Settings.clickActions] stays a single preference key.
+         */
+        fun clickActionsToJson(clickActions: Map<Int, Action>): String =
+            JSONObject().apply {
+                clickActions.forEach { (clickCount, action) ->
+                    put(clickCount.toString(), action.toJsonObject())
+                }
+            }.toString()
+
+        /**
+         * Parses a click-actions object written by [clickActionsToJson]. An
+         * entry with a key outside 1..3 or an unreadable action is skipped and
+         * logged instead of failing the whole map. Returns null when [text] is
+         * not a JSON object at all, so a caller validating a backup can reject
+         * it rather than silently treating it as no click actions.
+         */
+        fun parseClickActionsOrNull(text: String): Map<Int, Action>? {
+            val json = try {
+                JSONObject(text)
+            } catch (exception: JSONException) {
+                Log.w(TAG, "Discarding malformed click actions JSON: $exception")
+                return null
+            }
+            val clickActions = mutableMapOf<Int, Action>()
+            for (key in json.keys()) {
+                val clickCount = key.toIntOrNull()
+                if (clickCount == null || clickCount !in MIN_CLICK_COUNT..MAX_CLICK_COUNT) {
+                    Log.w(TAG, "Skipping click action '$key': not a click count")
+                    continue
+                }
+                val actionJson = json.optJSONObject(key)
+                if (actionJson == null) {
+                    Log.w(TAG, "Skipping click action $clickCount: not a JSON object")
+                    continue
+                }
+                actionFromJson(actionJson, clickCount)?.let { clickActions[clickCount] = it }
+            }
+            return clickActions
+        }
 
         /**
          * Parses a JSON array written by [toJson]. An entry the current build
@@ -126,6 +188,22 @@ data class Action(
                 Log.w(TAG, "Skipping action $id: malformed field")
                 return null
             }
+            // An absent key keeps the default so builds before MEDIA_KEY stored
+            // actions without it; a present but unknown name is malformed.
+            val mediaKey = if (json.has(FIELD_MEDIA_KEY)) {
+                val mediaKeyName = json.opt(FIELD_MEDIA_KEY)
+                if (mediaKeyName is String) {
+                    MediaKey.entries.firstOrNull { it.name == mediaKeyName }
+                } else {
+                    null
+                }
+            } else {
+                MediaKey.PLAY_PAUSE
+            }
+            if (mediaKey == null) {
+                Log.w(TAG, "Skipping action $id: unknown media key")
+                return null
+            }
             return Action(
                 id = id,
                 enabled = enabled,
@@ -136,6 +214,7 @@ data class Action(
                 webhookBodyTemplate = webhookBodyTemplate,
                 callerName = callerName,
                 callerNumber = callerNumber,
+                mediaKey = mediaKey,
             )
         }
     }

@@ -32,6 +32,7 @@ data class SettingsBackup(
     val webhookUrl: String? = null,
     val webhookBodyTemplate: String? = null,
     val actions: List<Action>? = null,
+    val clickActions: Map<Int, Action>? = null,
     val pairedDeviceAddress: String? = null,
     val pairingToken: String? = null,
 )
@@ -144,6 +145,15 @@ class Settings(context: Context) {
     var actions: List<Action>
         get() = prefs.getString(KEY_ACTIONS, null)?.let { Action.parseJsonOrNull(it) } ?: emptyList()
         set(value) = prefs.edit().putString(KEY_ACTIONS, Action.toJson(value)).apply()
+
+    // One action per ring click count, stored as one JSON object string keyed
+    // by the count. An absent or malformed key reads as no click actions.
+    var clickActions: Map<Int, Action>
+        get() = prefs.getString(KEY_CLICK_ACTIONS, null)
+            ?.let { Action.parseClickActionsOrNull(it) }
+            ?: emptyMap()
+        set(value) =
+            prefs.edit().putString(KEY_CLICK_ACTIONS, Action.clickActionsToJson(value)).apply()
 
     /**
      * Moves the legacy global webhook into the action list as a catch-all
@@ -281,6 +291,7 @@ class Settings(context: Context) {
         // A null calendar is written as an absent key rather than JSON null.
         calendarId?.let { put(KEY_CALENDAR_ID, it) }
         put(KEY_ACTIONS, Action.toJson(actions))
+        put(KEY_CLICK_ACTIONS, Action.clickActionsToJson(clickActions))
         put(KEY_PAIRED_DEVICE_ADDRESS, pairedDeviceAddress)
         put(KEY_PAIRING_TOKEN, pairingToken)
     }.toString()
@@ -336,6 +347,13 @@ class Settings(context: Context) {
         if (json.has(KEY_ACTIONS) && actions == null) {
             return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
         }
+        // Like actions, a present clickActions value must be a JSON object: a
+        // plain string would otherwise read as an empty map and wipe the map.
+        val clickActions = json.stringOrNull(KEY_CLICK_ACTIONS)
+            ?.let { Action.parseClickActionsOrNull(it) }
+        if (json.has(KEY_CLICK_ACTIONS) && clickActions == null) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
         return BackupParseResult.Valid(
             SettingsBackup(
                 openAiApiKey = json.stringOrNull(KEY_OPENAI_API_KEY),
@@ -352,6 +370,7 @@ class Settings(context: Context) {
                 webhookUrl = json.stringOrNull(KEY_WEBHOOK_URL),
                 webhookBodyTemplate = json.stringOrNull(KEY_WEBHOOK_BODY_TEMPLATE),
                 actions = actions,
+                clickActions = clickActions,
                 pairedDeviceAddress = json.stringOrNull(KEY_PAIRED_DEVICE_ADDRESS),
                 pairingToken = json.stringOrNull(KEY_PAIRING_TOKEN),
             ),
@@ -375,6 +394,7 @@ class Settings(context: Context) {
         backup.transcriptionEnabled?.let { transcriptionEnabled = it }
         backup.calendarId?.let { calendarId = it }
         backup.actions?.let { actions = it }
+        backup.clickActions?.let { clickActions = it }
         backup.pairedDeviceAddress?.let { pairedDeviceAddress = it }
         backup.pairingToken?.let { pairingToken = it }
         // A version 1 backup carries its global webhook in the legacy keys.
@@ -416,6 +436,7 @@ class Settings(context: Context) {
         private const val KEY_WEBHOOK_BODY_TEMPLATE = "webhook_body_template"
         private const val KEY_WEBHOOK_MIGRATED = "webhook_migrated"
         private const val KEY_ACTIONS = "actions"
+        private const val KEY_CLICK_ACTIONS = "clickActions"
         private const val KEY_LAST_BATTERY_VOLTAGE = "last_battery_voltage"
         private const val KEY_LAST_BATTERY_NOTIFICATION_TIME = "last_battery_notification_time"
         private const val KEY_PAIRED_DEVICE_ADDRESS = "paired_device_address"
@@ -444,6 +465,7 @@ class Settings(context: Context) {
             KEY_WEBHOOK_URL,
             KEY_WEBHOOK_BODY_TEMPLATE,
             KEY_ACTIONS,
+            KEY_CLICK_ACTIONS,
             KEY_PAIRED_DEVICE_ADDRESS,
             KEY_PAIRING_TOKEN,
         )

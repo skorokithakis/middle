@@ -22,9 +22,10 @@ middle/
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
 │       ├── data/         # Recordings, actions, webhook client, pipeline queue, settings
-│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL/PLAY_MEDIA enum; list persisted as one JSON array string
+│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY enum; list persisted as one JSON array string, click actions as one JSON object
 │       │   ├── ActionMatcher.kt        # Pure ordered pattern/rest rules, no time parsing (unit tested)
-│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA hits: time-parse, clock app, calendar write, Telecom fake call or Spotify Web API search plus a Spotify deep link
+│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY hits: time-parse, clock app, calendar write, Telecom fake call, Spotify Web API search or a media transport key
+│       │   ├── ClickActionRunner.kt    # Runs the action bound to a ring button click count (one best-effort attempt, no queueing)
 │       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs; runs the action phase after a transcription
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
 │       │   ├── Recording.kt            # Data class; parses filename for timestamp + duration
@@ -224,12 +225,14 @@ Key details:
 
 Actions are user-defined rules that run once against a transcript after it is
 produced, before any webhook delivery. `Action.kt` is the data class and the
-`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL`/`PLAY_MEDIA` enum, `ActionMatcher.kt`
-holds the pure ordered matching rules (unit-tested by `ActionMatcherTest.kt`;
-`ActionTest.kt` covers JSON parsing and round-tripping), `ActionRunner.kt`
-performs the ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA side effects (unit-tested by
+`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL`/`PLAY_MEDIA`/`MEDIA_KEY` enum,
+`ActionMatcher.kt` holds the pure ordered matching rules (unit-tested by
+`ActionMatcherTest.kt`; `ActionTest.kt` covers JSON parsing and
+round-tripping), `ActionRunner.kt` performs the
+ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY side effects (unit-tested by
 `ActionRunnerTest.kt`), and `TimeParseClient.kt` asks the model for a time
-(unit-tested by `TimeParseClientTest.kt`).
+(unit-tested by `TimeParseClientTest.kt`). A separate `ClickActionRunner.kt`
+runs one action for a ring button click (see Ring button clicks).
 
 Key details:
 - The whole list is one JSON array string under a single `Settings` key
@@ -380,6 +383,44 @@ and the settings UI and the service each build their own `Settings`.
 
 ---
 
+## Ring button clicks
+
+The Index 01 ring reports button presses through the vendor's transfer statuses,
+not as a separate command. `IndexSyncLoop` feeds every `TransferStatus` to the
+vendor's `ButtonSequenceDebouncer`, which merges the ring's partial sequences
+over a 700 ms window into whole gestures; when a gesture completes,
+`parseRingButtonClickCount()` turns it into a click count. Only sequences made
+entirely of `short` presses count: a `long` token means a hold (or the first half
+of hold-to-record), and counts outside 1..3 are not clicks.
+
+`Settings.clickActions` maps each count (1, 2, 3) to at most one `Action`,
+persisted as one JSON object under a single preference key. A click with no bound
+action, or one whose action is disabled, does nothing.
+
+A click is a bare collection: it carries no audio and no transcript, so it is not
+run through the durable pipeline queue. `SyncForegroundService` receives each
+click through `IndexSyncLoop`'s `onClicks` callback and launches
+`ClickActionRunner` on the service scope's IO dispatcher — deliberately not the
+ring session's scope, so a session restart cannot cancel an in-flight webhook.
+The runner reads the bound action and:
+
+- `WEBHOOK`: one best-effort POST via `WebhookClient` with `$transcript` and
+  `$rest` both empty and the action's body template (or the default). There is no
+  queueing and no retry; a blank URL is logged and skipped. The outcome is logged
+  through `WebhookLog`.
+- `FAKE_CALL` / `MEDIA_KEY`: run directly through `ActionRunner` with an empty
+  transcript.
+- Any other type is logged and ignored; the click-action UI never offers the
+  transcript-dependent types.
+
+Each click is caught individually, so a failure is logged and can never crash the
+sync service. A non-audio collection is not followed by `TransferComplete`, so
+`IndexSyncLoop` commits the click's collection index at
+`TransferStatus.TransferTypeDetermined`; without that the ring would re-deliver
+the same click every session.
+
+---
+
 ## Firmware device lifecycle
 
 ```
@@ -524,7 +565,8 @@ uv run python -m py_compile sync.py    # syntax check
 - **Limited automated tests**: `PipelinePolicyTest.kt` unit-tests backoff and
   outcome classification; `ActionTest.kt` covers action JSON parsing and
   round-tripping; `ActionMatcherTest.kt` the ordered pattern/rest rules;
-  `ActionRunnerTest.kt` the time/calendar helpers; `WebhookClientTest.kt` the
+  `ActionRunnerTest.kt` the time/calendar helpers; `ClickActionRunnerTest.kt` the
+  ring-click dispatch rules; `WebhookClientTest.kt` the
   body template substitution; `TimeParseClientTest.kt` the time-parse response;
   and `SpeechEndpointerTest.kt` the VAD endpointer's reframing and stop/discard
   rules. There are no firmware tests, Python tests, or Android instrumentation

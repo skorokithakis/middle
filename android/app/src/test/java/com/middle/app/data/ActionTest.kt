@@ -1,6 +1,7 @@
 package com.middle.app.data
 
 import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -178,6 +179,88 @@ class ActionTest {
         val action = Action.fromJson(json).single()
         assertEquals("", action.callerName)
         assertEquals("", action.callerNumber)
+    }
+
+    @Test
+    fun mediaKeyRoundTripsThroughJson() {
+        val action = Action(
+            id = "a6",
+            enabled = true,
+            type = ActionType.MEDIA_KEY,
+            pattern = Action.DEFAULT_MEDIA_KEY_PATTERN,
+            stop = true,
+            mediaKey = MediaKey.NEXT,
+        )
+        assertEquals(listOf(action), Action.fromJson(Action.toJson(listOf(action))))
+    }
+
+    @Test
+    fun absentMediaKeyReadsAsPlayPause() {
+        val json = """
+            [
+              {"id":"a1","enabled":true,"type":"MEDIA_KEY","pattern":"x","stop":true}
+            ]
+        """.trimIndent()
+        assertEquals(MediaKey.PLAY_PAUSE, Action.fromJson(json).single().mediaKey)
+    }
+
+    @Test
+    fun unknownMediaKeyIsMalformed() {
+        val json = """
+            [
+              {"id":"a1","enabled":true,"type":"MEDIA_KEY","pattern":"x","stop":true,"mediaKey":"LOUDER"}
+            ]
+        """.trimIndent()
+        assertTrue(Action.fromJson(json).isEmpty())
+    }
+
+    @Test
+    fun clickActionsRoundTripThroughJson() {
+        val clickActions = mapOf(
+            1 to alarmAction.copy(id = "c1", pattern = "", stop = false),
+            3 to Action(
+                id = "c3",
+                enabled = true,
+                type = ActionType.MEDIA_KEY,
+                pattern = "",
+                stop = false,
+                mediaKey = MediaKey.PREVIOUS,
+            ),
+        )
+        assertEquals(
+            clickActions,
+            Action.parseClickActionsOrNull(Action.clickActionsToJson(clickActions)),
+        )
+    }
+
+    @Test
+    fun clickActionsKeysAreTheClickCountStrings() {
+        val json = Action.clickActionsToJson(
+            mapOf(2 to alarmAction.copy(id = "c2", pattern = "", stop = false)),
+        )
+        val object0 = JSONObject(json)
+        assertTrue(object0.has("2"))
+        assertEquals("c2", object0.getJSONObject("2").getString("id"))
+    }
+
+    @Test
+    fun clickActionsSkipBadKeyAndMalformedEntry() {
+        val json = """
+            {
+              "0": {"id":"zero","enabled":true,"type":"ALARM","pattern":"","stop":false},
+              "1": {"id":"one","enabled":true,"type":"ALARM","pattern":"","stop":false},
+              "2": "not an object",
+              "3": {"id":"three","enabled":true,"type":"MEDIA_KEY","pattern":"","stop":false},
+              "4": {"id":"four","enabled":true,"type":"ALARM","pattern":"","stop":false}
+            }
+        """.trimIndent()
+        assertEquals(setOf(1, 3), Action.parseClickActionsOrNull(json)?.keys)
+    }
+
+    @Test
+    fun malformedClickActionsJsonReturnsNull() {
+        assertNull(Action.parseClickActionsOrNull("not json"))
+        assertNull(Action.parseClickActionsOrNull("[]"))
     }
 
     @Test

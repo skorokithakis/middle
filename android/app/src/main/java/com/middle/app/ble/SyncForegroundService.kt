@@ -17,9 +17,12 @@ import com.middle.app.AppVisibility
 import com.middle.app.MainActivity
 import com.middle.app.MiddleApplication
 import com.middle.app.R
+import com.middle.app.data.ActionRunner
+import com.middle.app.data.ClickActionRunner
 import com.middle.app.data.PipelineQueue
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import com.middle.app.data.WebhookClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -59,6 +62,7 @@ class SyncForegroundService : Service() {
     private lateinit var repository: RecordingsRepository
     private lateinit var settings: Settings
     private lateinit var pipelineQueue: PipelineQueue
+    private lateinit var clickActionRunner: ClickActionRunner
 
     private val batteryTracker = BatteryVoltageTracker()
 
@@ -89,6 +93,13 @@ class SyncForegroundService : Service() {
         repository = (application as MiddleApplication).repository
         settings = Settings(this)
         pipelineQueue = (application as MiddleApplication).pipelineQueue
+        clickActionRunner = ClickActionRunner(
+            clickActions = { settings.clickActions },
+            runAction = { hit -> ActionRunner(this).run(hit, transcript = "") },
+            postWebhook = { url, template ->
+                WebhookClient.post(url, transcript = "", rest = "", bodyTemplate = template)
+            },
+        )
         startForegroundNotification(getString(R.string.sync_notification_idle))
         settings.addSessionChangeListener(sessionChangeListener)
         startSyncLoop()
@@ -221,6 +232,13 @@ class SyncForegroundService : Service() {
                     onBatteryVoltage = { millivolts ->
                         batteryTracker.reportRing(ringDeviceKey, millivolts)
                             ?.let { _batteryVoltage.value = it }
+                    },
+                    onClicks = { clicks ->
+                        // Fire-and-forget on the service scope rather than the
+                        // session scope, so a session restart cannot cancel an
+                        // in-flight webhook POST. The runner catches its own
+                        // failures and never crashes the service.
+                        scope.launch(Dispatchers.IO) { clickActionRunner.run(clicks) }
                     },
                 )
                 indexSyncLoop.run()

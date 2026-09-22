@@ -95,6 +95,26 @@ class ActionMatcherTest {
     }
 
     @Test
+    fun mediaKeyDefaultPatternMatchesPauseAndResumeOnly() {
+        val action = alarm.copy(
+            id = "key",
+            type = ActionType.MEDIA_KEY,
+            pattern = Action.DEFAULT_MEDIA_KEY_PATTERN,
+        )
+
+        assertEquals(1, plan("pause", action).hits.size)
+        assertEquals(1, plan("Resume the music", action).hits.size)
+
+        // A new MEDIA_KEY action defaults to PLAY_PAUSE, so these must not fire
+        // and toggle playback instead of skipping.
+        assertTrue(plan("next track", action).hits.isEmpty())
+        assertTrue(plan("next song", action).hits.isEmpty())
+        assertTrue(plan("previous track", action).hits.isEmpty())
+        assertTrue(plan("previous song", action).hits.isEmpty())
+        assertTrue(plan("I will resume work later", action).hits.isEmpty())
+    }
+
+    @Test
     fun catchAllLeavesAnEmptyRest() {
         val catchAll = alarm.copy(
             id = "hook",

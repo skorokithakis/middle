@@ -25,6 +25,14 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
     private val _actions = MutableStateFlow(settings.actions)
     val actions: StateFlow<List<Action>> = _actions
 
+    private val _clickActions = MutableStateFlow(settings.clickActions)
+    val clickActions: StateFlow<Map<Int, Action>> = _clickActions
+
+    // The click slots only apply to the ring, so the screen hides its section
+    // for the pendant.
+    private val _deviceType = MutableStateFlow(settings.deviceType)
+    val deviceType: StateFlow<String> = _deviceType
+
     // Null means no calendar is chosen, or the chosen one can no longer be read
     // (for example the account was removed). Both read as "None".
     private val _selectedCalendarName = MutableStateFlow<String?>(null)
@@ -39,6 +47,8 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
      */
     fun refresh() {
         _actions.value = settings.actions
+        _clickActions.value = settings.clickActions
+        _deviceType.value = settings.deviceType
         refreshSelectedCalendarName()
     }
 
@@ -54,6 +64,7 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
                 ActionType.WEBHOOK -> Action.DEFAULT_WEBHOOK_PATTERN
                 ActionType.FAKE_CALL -> Action.DEFAULT_FAKE_CALL_PATTERN
                 ActionType.PLAY_MEDIA -> Action.DEFAULT_PLAY_MEDIA_PATTERN
+                ActionType.MEDIA_KEY -> Action.DEFAULT_MEDIA_KEY_PATTERN
             },
             // A webhook is the catch-all at the end of the chain; the other
             // types normally stop it.
@@ -74,6 +85,14 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
 
     fun deleteAction(id: String) {
         persist(settings.actions.filterNot { it.id == id })
+    }
+
+    /** Binds [action] to a ring click [count], or unbinds it when null. */
+    fun setClickAction(count: Int, action: Action?) {
+        val updated = settings.clickActions.toMutableMap()
+        if (action == null) updated.remove(count) else updated[count] = action
+        settings.clickActions = updated
+        _clickActions.value = updated
     }
 
     /** Swaps the action with the one above it. The first action does not move. */

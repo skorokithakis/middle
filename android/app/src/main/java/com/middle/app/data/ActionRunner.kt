@@ -9,12 +9,14 @@ import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.AlarmClock
 import android.provider.CalendarContract
 import android.telecom.TelecomManager
 import android.util.Log
+import android.view.KeyEvent
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.middle.app.MainActivity
@@ -35,8 +37,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Executes an ALARM, CALENDAR, FAKE_CALL or PLAY_MEDIA [ActionHit] against the
- * system.
+ * Executes an ALARM, CALENDAR, FAKE_CALL, PLAY_MEDIA or MEDIA_KEY [ActionHit]
+ * against the system.
  *
  * [run] blocks while it calls the time parser and writes to a provider, so the
  * caller runs it on [kotlinx.coroutines.Dispatchers.IO]. It returns true only
@@ -82,6 +84,7 @@ class ActionRunner(context: Context) {
             ActionType.WEBHOOK -> false
             ActionType.FAKE_CALL -> runFakeCall(hit.action)
             ActionType.PLAY_MEDIA -> runPlayMedia(hit)
+            ActionType.MEDIA_KEY -> runMediaKey(hit.action)
         }
     }
 
@@ -314,6 +317,28 @@ class ActionRunner(context: Context) {
         }
 
         postTapToPlayNotification(intent, text)
+        return true
+    }
+
+    /**
+     * Sends a transport key to whatever media session currently has focus.
+     * Android requires the down/up pair to register as one press. There is no
+     * way to know whether a player received it, so the action always reports a
+     * result and lets `stop` behave predictably.
+     */
+    private fun runMediaKey(action: Action): Boolean {
+        val keyCode = when (action.mediaKey) {
+            MediaKey.PLAY_PAUSE -> KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+            MediaKey.NEXT -> KeyEvent.KEYCODE_MEDIA_NEXT
+            MediaKey.PREVIOUS -> KeyEvent.KEYCODE_MEDIA_PREVIOUS
+        }
+        val audioManager = appContext.getSystemService(AudioManager::class.java)
+        if (audioManager == null) {
+            Log.w(TAG, "[action] media key action matched but AudioManager is unavailable")
+            return false
+        }
+        audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+        audioManager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
         return true
     }
 

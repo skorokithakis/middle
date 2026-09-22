@@ -6,6 +6,7 @@ import com.middle.app.audio.RingAudioPreprocessor
 import com.middle.app.audio.LinearResampler
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import coredevices.haversine.ButtonSequenceDebouncer
 import coredevices.haversine.CollectionIndexStorage
 import coredevices.haversine.KMPHaversineDebugDelegate
 import coredevices.haversine.KMPHaversineDebugInfo
@@ -17,6 +18,7 @@ import coredevices.haversine.TransferStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -38,13 +40,19 @@ class IndexSyncLoop(
     context: Context,
     private val settings: Settings,
     private val repository: RecordingsRepository,
-    scope: CoroutineScope,
+    private val scope: CoroutineScope,
     private val onRecordingSaved: (File, String) -> Unit,
     private val onBacklogSkipped: (Int) -> Unit,
     private val onBatteryVoltage: (Int?) -> Unit,
+    private val onClicks: (Int) -> Unit,
 ) {
 
     private val collectionIndexStorage = RingCollectionIndexStorage(settings)
+
+    // Merges the ring's partial button sequences (700ms window) into whole
+    // gestures. It must be fed every TransferStatus, so it lives here where
+    // they are seen.
+    private val buttonSequenceDebouncer = ButtonSequenceDebouncer(scope)
 
     private val manager = KMPHaversineSatelliteManager(
         pairedSatelliteIdProvider = {
@@ -69,6 +77,15 @@ class IndexSyncLoop(
      */
     suspend fun run() {
         manager.awaitBluetoothReady()
+        // The debouncer's SharedFlow does not replay, so the collector has to be
+        // subscribed before scanning starts emitting statuses. It is cancelled
+        // below when run() returns, including the backlog-skip path.
+        val gestureJob = scope.launch {
+            buttonSequenceDebouncer.buttonGestures.collect { gesture ->
+                Log.d(TAG, "Ring button sequence: \"${gesture.sequence}\"")
+                parseRingButtonClickCount(gesture.sequence)?.let(onClicks)
+            }
+        }
         try {
             manager.startScanning().collect { status ->
                 when (status) {
@@ -86,10 +103,15 @@ class IndexSyncLoop(
             // session after run() returns, and the fresh session re-seeds its
             // index from disk, so the skip must not surface as a failure.
             Log.d(TAG, "Ended the ring session early after skipping the backlog.")
+        } finally {
+            gestureJob.cancel()
         }
     }
 
     private suspend fun handleTransferStatus(transferStatus: TransferStatus) {
+        // The debouncer reads ranges from TransferStarted and sequences from
+        // TransferTypeDetermined, so it must see every transfer status.
+        buttonSequenceDebouncer.onTransferStatus(transferStatus)
         when (transferStatus) {
             is TransferStatus.TransferStarted -> handleTransferStarted(transferStatus)
             is TransferStatus.TransferComplete -> saveTransfer(transferStatus)
@@ -113,6 +135,16 @@ class IndexSyncLoop(
                 // and omits it (null) on others, so a missing value is passed on
                 // as null rather than defaulted to zero.
                 onBatteryVoltage(transferStatus.batteryVoltageMilliV?.toInt())
+                if (!transferStatus.isAudio) {
+                    // A bare click collection carries no audio and is not
+                    // followed by TransferComplete, so this is the only point at
+                    // which its index can be committed durably. Without it the
+                    // ring re-sends the same click every session, because the
+                    // library's in-memory advance is never persisted.
+                    collectionIndexStorage.commitLastSuccessfulCollectionIndex(
+                        transferStatus.collectionIndex,
+                    )
+                }
             }
             // In-progress statuses carry no audio.
             else -> Unit

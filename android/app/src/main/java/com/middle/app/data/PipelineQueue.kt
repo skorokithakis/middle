@@ -393,8 +393,8 @@ class PipelineQueue(
 
     /**
      * Runs the ordered plan against [transcript] and returns the WEBHOOK action
-     * ids to deliver, in order. ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA hits go
-     * through [ActionRunner]; when such a `stop` hit produces nothing,
+     * ids to deliver, in order. ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY
+     * hits go through [ActionRunner]; when such a `stop` hit produces nothing,
      * evaluation resumes after it, because the matcher applies `stop`
      * optimistically.
      */
@@ -413,7 +413,7 @@ class PipelineQueue(
                 when (hit.action.type) {
                     ActionType.WEBHOOK -> webhookActionIds.add(hit.action.id)
                     ActionType.ALARM, ActionType.CALENDAR, ActionType.FAKE_CALL,
-                    ActionType.PLAY_MEDIA -> {
+                    ActionType.PLAY_MEDIA, ActionType.MEDIA_KEY -> {
                         // A runner crash on one hit must not abort the whole
                         // plan: treat it as producing nothing so the ids already
                         // collected still get delivered and later hits run. The
@@ -448,8 +448,9 @@ class PipelineQueue(
      * Collects the WEBHOOK ids a regex-only plan would deliver. Used when the
      * runner must not run: advancing a job whose transcript is already on disk
      * after a crash, or a failure in the action phase. The matcher already stops
-     * at the first `stop` hit, so a blocking ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA
-     * still hides the webhooks after it.
+     * at the first `stop` hit, so a blocking
+     * ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY still hides the webhooks
+     * after it.
      */
     private fun collectWebhookIdsByRegex(transcript: String, actions: List<Action>): List<String> {
         val plan = ActionMatcher.plan(transcript, actions)
