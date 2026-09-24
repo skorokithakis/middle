@@ -16,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -139,6 +140,7 @@ class AssistActivity : ComponentActivity() {
                 AssistScreen(
                     state = current,
                     onStop = { endCapture(save = true) },
+                    onCancel = ::cancelCapture,
                 )
             }
         }
@@ -240,6 +242,15 @@ class AssistActivity : ComponentActivity() {
         }
     }
 
+    /** Drops the audio and closes the card at once, with no result shown. */
+    private fun cancelCapture() {
+        if (!ended.compareAndSet(false, true)) return
+        timerJob?.cancel()
+        timerJob = null
+        phoneRecorder.release()
+        finish()
+    }
+
     /**
      * Collects [RecordingsRepository.recordings] until the saved file gains a
      * transcript, then shows it. Gives up after [TRANSCRIPT_TIMEOUT_MILLIS].
@@ -317,6 +328,7 @@ class AssistActivity : ComponentActivity() {
 private fun AssistScreen(
     state: AssistState,
     onStop: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     // No fillMaxSize: the window wraps this card, which is what lets a tap
     // outside the card reach the window and dismiss it. The card is a fixed
@@ -352,8 +364,13 @@ private fun AssistScreen(
                             style = MaterialTheme.typography.displaySmall,
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        OutlinedButton(onClick = onStop) {
-                            Text("Stop")
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = onCancel) {
+                                Text("Cancel")
+                            }
+                            OutlinedButton(onClick = onStop) {
+                                Text("Stop")
+                            }
                         }
                     }
                     AssistState.Transcribing -> Text(
