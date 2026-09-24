@@ -371,7 +371,7 @@ private fun AssistScreen(
                                 Text("Cancel")
                             }
                             OutlinedButton(onClick = onStop) {
-                                Text("Stop")
+                                Text("Done")
                             }
                         }
                     }
