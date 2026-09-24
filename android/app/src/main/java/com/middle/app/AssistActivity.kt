@@ -296,13 +296,15 @@ class AssistActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Leaving while still recording stops and saves; the pipeline then
-        // transcribes in the background. In any later state the work is already
-        // underway, so just finish without waiting for a transcript. Waiting on
-        // the permission prompt is neither, and must not finish so the result
-        // can still be delivered.
+        // While recording, a dismissal (tap outside or back, which finish the
+        // activity) cancels. Being sent away (home, screen off, app switch)
+        // stops and saves instead; the pipeline then transcribes in the
+        // background. In any later state the work is already underway, so just
+        // finish without waiting for a transcript. Waiting on the permission
+        // prompt is neither, and must not finish so the result can still be
+        // delivered.
         if (captureStarted && state.value is AssistState.Listening) {
-            endCapture(save = true)
+            if (isFinishing) cancelCapture() else endCapture(save = true)
         }
         if (ended.get()) finish()
     }
