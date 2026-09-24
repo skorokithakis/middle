@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -122,6 +123,9 @@ class AssistActivity : ComponentActivity() {
         // the full-screen window would swallow the outside touch.
         setFinishOnTouchOutside(true)
         window.setGravity(Gravity.CENTER)
+        // The screen must not dim or sleep while the user talks or reads the
+        // result. The flag belongs to this window, so it clears when the card closes.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val app = application as MiddleApplication
         repository = app.repository
