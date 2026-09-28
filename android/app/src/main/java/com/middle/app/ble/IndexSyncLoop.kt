@@ -6,6 +6,7 @@ import com.middle.app.audio.RingAudioPreprocessor
 import com.middle.app.audio.LinearResampler
 import com.middle.app.data.RecordingsRepository
 import com.middle.app.data.Settings
+import com.middle.app.data.WebhookLog
 import coredevices.haversine.ButtonSequenceDebouncer
 import coredevices.haversine.CollectionIndexStorage
 import coredevices.haversine.KMPHaversineDebugDelegate
@@ -83,7 +84,12 @@ class IndexSyncLoop(
         val gestureJob = scope.launch {
             buttonSequenceDebouncer.buttonGestures.collect { gesture ->
                 Log.d(TAG, "Ring button sequence: \"${gesture.sequence}\"")
-                parseRingButtonClickCount(gesture.sequence)?.let(onClicks)
+                val clickCount = parseRingButtonClickCount(gesture.sequence)
+                WebhookLog.info(
+                    "Ring button: \"${gesture.sequence}\" -> " +
+                        (clickCount?.let { "$it clicks" } ?: "not a click"),
+                )
+                clickCount?.let(onClicks)
             }
         }
         try {
@@ -141,6 +147,9 @@ class IndexSyncLoop(
                     // which its index can be committed durably. Without it the
                     // ring re-sends the same click every session, because the
                     // library's in-memory advance is never persisted.
+                    WebhookLog.info(
+                        "Ring click collection received: ${transferStatus.collectionIndex}",
+                    )
                     collectionIndexStorage.commitLastSuccessfulCollectionIndex(
                         transferStatus.collectionIndex,
                     )

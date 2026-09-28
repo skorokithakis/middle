@@ -35,25 +35,57 @@ class ClickActionRunner(
             // tried first and, when it ends a call, the slot's action is skipped.
             // A click with no call to end falls through to the slot as usual.
             val hangUpCount = hangUpClickCount()
-            if (hangUpCount > 0 && clickCount == hangUpCount && endCall()) return
+            if (hangUpCount > 0 && clickCount == hangUpCount) {
+                if (endCall()) {
+                    WebhookLog.info("Ring hang-up: ended a call")
+                    return
+                }
+                // False also covers a failed precondition, which ActionRunner
+                // logs on its own line, so this does not claim there was no call.
+                WebhookLog.info("Ring hang-up: no call ended")
+            }
 
-            val bound = clickActions()[clickCount] ?: return
+            val bound = clickActions()[clickCount]
+            if (bound == null) {
+                WebhookLog.info("Ring click $clickCount: no action bound")
+                return
+            }
             action = bound
-            if (!bound.enabled) return
+            if (!bound.enabled) {
+                WebhookLog.info("Ring click $clickCount: action ${bound.id} is disabled")
+                return
+            }
 
             when (bound.type) {
-                ActionType.WEBHOOK -> runWebhook(bound)
+                ActionType.WEBHOOK -> {
+                    WebhookLog.info("Ring click $clickCount: running WEBHOOK")
+                    runWebhook(bound)
+                }
                 // A click has no transcript, so only the types that make sense
                 // on their own are offered in the click-action UI.
-                ActionType.FAKE_CALL, ActionType.MEDIA_KEY ->
+                ActionType.FAKE_CALL -> {
+                    WebhookLog.info("Ring click $clickCount: running FAKE_CALL")
                     runAction(ActionHit(bound, rest = "", index = 0))
-                ActionType.ALARM, ActionType.CALENDAR, ActionType.PLAY_MEDIA ->
+                }
+                ActionType.MEDIA_KEY -> {
+                    WebhookLog.info(
+                        "Ring click $clickCount: running MEDIA_KEY (${bound.mediaKey})",
+                    )
+                    runAction(ActionHit(bound, rest = "", index = 0))
+                }
+                ActionType.ALARM, ActionType.CALENDAR, ActionType.PLAY_MEDIA -> {
                     Log.w(TAG, "Ignoring ${bound.type} click action ${bound.id}: it needs a transcript")
+                    WebhookLog.info(
+                        "Ring click $clickCount: ignoring ${bound.type}: it needs a transcript",
+                    )
+                }
                 // HANG_UP left a slot in an earlier build, when it was a click
                 // choice; the setting above replaced it. A hand-edited backup
                 // can still supply one, so it is logged and ignored.
-                ActionType.HANG_UP ->
+                ActionType.HANG_UP -> {
                     Log.w(TAG, "Ignoring HANG_UP click action ${bound.id}: hang up is now a setting")
+                    WebhookLog.info("Ring click $clickCount: ignoring HANG_UP: hang up is a setting")
+                }
             }
         } catch (exception: Exception) {
             // One click's failure must never take the sync service down with it.
@@ -65,6 +97,7 @@ class ClickActionRunner(
     private fun runWebhook(action: Action) {
         if (action.webhookUrl.isBlank()) {
             Log.w(TAG, "WEBHOOK click action ${action.id} has no URL; skipping")
+            WebhookLog.error("Click webhook skipped: no URL")
             return
         }
         val template = action.webhookBodyTemplate.ifBlank { Settings.DEFAULT_WEBHOOK_BODY_TEMPLATE }

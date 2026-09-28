@@ -365,17 +365,20 @@ class ActionRunner(context: Context) {
     private fun attemptEndCall(): Boolean? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             Log.w(TAG, "[action] hang up action matched but it needs Android 9 or newer")
+            WebhookLog.error("Hang up failed: it needs Android 9 or newer")
             postInfoNotification(appContext.getString(R.string.hang_up_unsupported_notification_text))
             return null
         }
         if (!hasAnswerPhoneCallsPermission()) {
             Log.w(TAG, "[action] hang up action matched but ANSWER_PHONE_CALLS is not granted")
+            WebhookLog.error("Hang up failed: ANSWER_PHONE_CALLS is not granted")
             postInfoNotification(appContext.getString(R.string.hang_up_permission_notification_text))
             return null
         }
         val telecomManager = appContext.getSystemService(TelecomManager::class.java)
         if (telecomManager == null) {
             Log.w(TAG, "[action] hang up action matched but Telecom is unavailable")
+            WebhookLog.error("Hang up failed: Telecom is unavailable")
             postInfoNotification(appContext.getString(R.string.hang_up_unavailable_notification_text))
             return null
         }
@@ -388,6 +391,9 @@ class ActionRunner(context: Context) {
         } catch (exception: SecurityException) {
             // The permission can be revoked between the check above and the call.
             Log.w(TAG, "[action] hang up action was refused", exception)
+            WebhookLog.error(
+                "Hang up failed: ${exception::class.simpleName}: ${exception.message}",
+            )
             postInfoNotification(appContext.getString(R.string.hang_up_permission_notification_text))
             return null
         }

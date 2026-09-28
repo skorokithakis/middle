@@ -2,6 +2,7 @@ package com.middle.app.data
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -27,6 +28,7 @@ object WebhookLog {
             message = message,
             isError = isError,
         )
-        _entries.value = (listOf(entry) + _entries.value).take(MAX_ENTRIES)
+        // Entries arrive from several coroutines, so the prepend must be atomic.
+        _entries.update { (listOf(entry) + it).take(MAX_ENTRIES) }
     }
 }
