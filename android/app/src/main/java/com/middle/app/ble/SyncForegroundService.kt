@@ -93,12 +93,15 @@ class SyncForegroundService : Service() {
         repository = (application as MiddleApplication).repository
         settings = Settings(this)
         pipelineQueue = (application as MiddleApplication).pipelineQueue
+        val actionRunner = ActionRunner(this)
         clickActionRunner = ClickActionRunner(
             clickActions = { settings.clickActions },
-            runAction = { hit -> ActionRunner(this).run(hit, transcript = "") },
+            runAction = { hit -> actionRunner.run(hit, transcript = "") },
             postWebhook = { url, template ->
                 WebhookClient.post(url, transcript = "", rest = "", bodyTemplate = template)
             },
+            hangUpClickCount = { settings.hangUpClickCount },
+            endCall = { actionRunner.endCall() },
         )
         startForegroundNotification(getString(R.string.sync_notification_idle))
         settings.addSessionChangeListener(sessionChangeListener)

@@ -33,6 +33,8 @@ data class SettingsBackup(
     val webhookBodyTemplate: String? = null,
     val actions: List<Action>? = null,
     val clickActions: Map<Int, Action>? = null,
+    // The ring click count that tries to end a call first, 0 for off.
+    val hangUpClickCount: Int? = null,
     val pairedDeviceAddress: String? = null,
     val pairingToken: String? = null,
 )
@@ -154,6 +156,12 @@ class Settings(context: Context) {
             ?: emptyMap()
         set(value) =
             prefs.edit().putString(KEY_CLICK_ACTIONS, Action.clickActionsToJson(value)).apply()
+
+    // The ring click count that ends a call instead of running its slot action.
+    // 0 means off; ClickActionRunner treats any value outside 1..3 as off too.
+    var hangUpClickCount: Int
+        get() = prefs.getInt(KEY_HANG_UP_CLICK_COUNT, 0)
+        set(value) = prefs.edit().putInt(KEY_HANG_UP_CLICK_COUNT, value).apply()
 
     /**
      * Moves the legacy global webhook into the action list as a catch-all
@@ -292,6 +300,7 @@ class Settings(context: Context) {
         calendarId?.let { put(KEY_CALENDAR_ID, it) }
         put(KEY_ACTIONS, Action.toJson(actions))
         put(KEY_CLICK_ACTIONS, Action.clickActionsToJson(clickActions))
+        put(KEY_HANG_UP_CLICK_COUNT, hangUpClickCount)
         put(KEY_PAIRED_DEVICE_ADDRESS, pairedDeviceAddress)
         put(KEY_PAIRING_TOKEN, pairingToken)
     }.toString()
@@ -341,6 +350,13 @@ class Settings(context: Context) {
         if (json.has(KEY_CALENDAR_ID) && json.opt(KEY_CALENDAR_ID) !is Number) {
             return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
         }
+        // The hang-up count must be a whole number in 0..3; a fractional,
+        // out-of-range or overflowing value is malformed like a wrong type.
+        if (json.has(KEY_HANG_UP_CLICK_COUNT) &&
+            json.hangUpClickCountOrNull(KEY_HANG_UP_CLICK_COUNT) == null
+        ) {
+            return BackupParseResult.Invalid(BackupParseError.NOT_A_BACKUP)
+        }
         // A present actions value must be a JSON array: a plain string would
         // otherwise parse as an empty list and wipe the stored actions.
         val actions = json.stringOrNull(KEY_ACTIONS)?.let { Action.parseJsonOrNull(it) }
@@ -371,6 +387,7 @@ class Settings(context: Context) {
                 webhookBodyTemplate = json.stringOrNull(KEY_WEBHOOK_BODY_TEMPLATE),
                 actions = actions,
                 clickActions = clickActions,
+                hangUpClickCount = json.hangUpClickCountOrNull(KEY_HANG_UP_CLICK_COUNT),
                 pairedDeviceAddress = json.stringOrNull(KEY_PAIRED_DEVICE_ADDRESS),
                 pairingToken = json.stringOrNull(KEY_PAIRING_TOKEN),
             ),
@@ -395,6 +412,7 @@ class Settings(context: Context) {
         backup.calendarId?.let { calendarId = it }
         backup.actions?.let { actions = it }
         backup.clickActions?.let { clickActions = it }
+        backup.hangUpClickCount?.let { hangUpClickCount = it }
         backup.pairedDeviceAddress?.let { pairedDeviceAddress = it }
         backup.pairingToken?.let { pairingToken = it }
         // A version 1 backup carries its global webhook in the legacy keys.
@@ -437,6 +455,7 @@ class Settings(context: Context) {
         private const val KEY_WEBHOOK_MIGRATED = "webhook_migrated"
         private const val KEY_ACTIONS = "actions"
         private const val KEY_CLICK_ACTIONS = "clickActions"
+        private const val KEY_HANG_UP_CLICK_COUNT = "hang_up_click_count"
         private const val KEY_LAST_BATTERY_VOLTAGE = "last_battery_voltage"
         private const val KEY_LAST_BATTERY_NOTIFICATION_TIME = "last_battery_notification_time"
         private const val KEY_PAIRED_DEVICE_ADDRESS = "paired_device_address"
@@ -486,4 +505,16 @@ private fun JSONObject.booleanOrNull(key: String): Boolean? = if (has(key)) getB
 private fun JSONObject.longOrNull(key: String): Long? = when (val value = opt(key)) {
     is Number -> value.toLong()
     else -> null
+}
+
+/**
+ * The hang-up click count, accepted only as a whole number in 0..3. A
+ * fractional, out-of-range or overflowing value reads as null, so a backup parse
+ * rejects it instead of truncating or wrapping it.
+ */
+private fun JSONObject.hangUpClickCountOrNull(key: String): Int? {
+    val value = (opt(key) as? Number)?.toDouble() ?: return null
+    if (value.isNaN() || value.isInfinite() || value % 1.0 != 0.0) return null
+    if (value < 0.0 || value > 3.0) return null
+    return value.toInt()
 }

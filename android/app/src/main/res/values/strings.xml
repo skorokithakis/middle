@@ -42,6 +42,11 @@
     <string name="actions_click_double">Double click</string>
     <string name="actions_click_triple">Triple click</string>
     <string name="actions_click_nothing">Nothing</string>
+    <string name="actions_hang_up_click_label">Hang up calls with</string>
+    <string name="actions_hang_up_off">Off</string>
+    <string name="actions_hang_up_clicks_one">1 click</string>
+    <string name="actions_hang_up_clicks_two">2 clicks</string>
+    <string name="actions_hang_up_clicks_three">3 clicks</string>
     <string name="actions_pattern_label">Pattern</string>
     <string name="actions_stop">Stop after this action</string>
     <string name="actions_webhook_url_label">Webhook URL</string>

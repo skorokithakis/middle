@@ -344,8 +344,8 @@ Key details:
   `ActionsScreen.kt` shows a card to grant it. The alarm intent needs
   `com.android.alarm.permission.SET_ALARM`, reminders need
   `READ_CALENDAR`/`WRITE_CALENDAR`, and hang up needs `ANSWER_PHONE_CALLS`
-  (requested from the Actions screen when the action is added or bound to a
-  click).
+  (requested from the Actions screen when the action is added or a hang-up click
+  count is picked).
 - All action notifications use the `middle_actions` channel. Successes, the
   tap-to-set alarm and tap-to-play media use ID 5 so a later result replaces the
   pending one; failures and other info use ID 6 so they cannot replace it. The
@@ -429,6 +429,14 @@ of hold-to-record), and counts outside 1..3 are not clicks.
 persisted as one JSON object under a single preference key. A click with no bound
 action, or one whose action is disabled, does nothing.
 
+`Settings.hangUpClickCount` (0 = off, the default) is a separate setting, not a
+slot: its click first tries to end a call through `ActionRunner.endCall()`. When
+a call was ended the click stops there and the bound slot action is skipped; when
+there was no call to end (or the override is off, or the click is another count)
+the slot runs as usual. The override applies even when no action is bound to that
+count. The Actions screen offers Off / 1 / 2 / 3 in the Ring button section and
+asks for `ANSWER_PHONE_CALLS` when a non-Off count is picked.
+
 A click is a bare collection: it carries no audio and no transcript, so it is not
 run through the durable pipeline queue. `SyncForegroundService` receives each
 click through `IndexSyncLoop`'s `onClicks` callback and launches
@@ -440,10 +448,13 @@ The runner reads the bound action and:
   `$rest` both empty and the action's body template (or the default). There is no
   queueing and no retry; a blank URL is logged and skipped. The outcome is logged
   through `WebhookLog`.
-- `FAKE_CALL` / `MEDIA_KEY` / `HANG_UP`: run directly through `ActionRunner`
-  with an empty transcript.
-- Any other type is logged and ignored; the click-action UI never offers the
-  transcript-dependent types.
+- `FAKE_CALL` / `MEDIA_KEY`: run directly through `ActionRunner` with an empty
+  transcript.
+- `ALARM` / `CALENDAR` / `PLAY_MEDIA`: logged and ignored because a click has no
+  transcript; the click-action UI never offers them.
+- `HANG_UP`: logged and ignored; hang up is a setting now. A HANG_UP bound to a
+  click slot by an earlier build (or supplied by a hand-edited backup) is
+  therefore inert.
 
 Each click is caught individually, so a failure is logged and can never crash the
 sync service. A non-audio collection is not followed by `TransferComplete`, so
@@ -475,7 +486,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. A header card always shows the selected device's sync status (a fixed `Index` label for the ring) and its battery voltage. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
-| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a multiline message field (prefilled with filler lines), a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call, play-media or hang-up action; adding a hang-up action or binding one to a ring click asks for the `ANSWER_PHONE_CALLS` permission. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
+| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a multiline message field (prefilled with filler lines), a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call, play-media or hang-up action; adding a hang-up action or picking a non-Off hang-up click count asks for the `ANSWER_PHONE_CALLS` permission. The Ring button section binds each of the 1/2/3 clicks to an action and offers a "Hang up calls with" Off/1/2/3 dropdown as the separate hang-up override. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), Spotify Client ID and Client Secret (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
 | Assistant | `ASSIST` / `VOICE_COMMAND` | Not a nav route: a dialog-style card shown when the system assistant is triggered (long-press power). Shows "Listening…" and elapsed time with a Stop button; Silero VAD ends the recording when the speaker stops, then it saves through the same pipeline. Has no launcher icon and is excluded from recents. |

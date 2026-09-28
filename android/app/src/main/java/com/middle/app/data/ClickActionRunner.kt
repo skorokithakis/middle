@@ -19,6 +19,10 @@ class ClickActionRunner(
     private val clickActions: () -> Map<Int, Action>,
     private val runAction: (ActionHit) -> Unit,
     private val postWebhook: (url: String, template: String) -> WebhookClient.Result,
+    // The count whose click tries to end a call before its slot action; 0 is off.
+    private val hangUpClickCount: () -> Int,
+    // True when a call was actually ended.
+    private val endCall: () -> Boolean,
 ) {
 
     fun run(clickCount: Int) {
@@ -27,6 +31,12 @@ class ClickActionRunner(
         // sync service's loop.
         var action: Action? = null
         try {
+            // The hang-up override is a separate setting, not a slot: it is
+            // tried first and, when it ends a call, the slot's action is skipped.
+            // A click with no call to end falls through to the slot as usual.
+            val hangUpCount = hangUpClickCount()
+            if (hangUpCount > 0 && clickCount == hangUpCount && endCall()) return
+
             val bound = clickActions()[clickCount] ?: return
             action = bound
             if (!bound.enabled) return
@@ -34,13 +44,16 @@ class ClickActionRunner(
             when (bound.type) {
                 ActionType.WEBHOOK -> runWebhook(bound)
                 // A click has no transcript, so only the types that make sense
-                // on their own are offered in the click-action UI. The others
-                // are transcript-dependent and ignored if a hand-edited backup
-                // supplies one.
-                ActionType.FAKE_CALL, ActionType.MEDIA_KEY, ActionType.HANG_UP ->
+                // on their own are offered in the click-action UI.
+                ActionType.FAKE_CALL, ActionType.MEDIA_KEY ->
                     runAction(ActionHit(bound, rest = "", index = 0))
                 ActionType.ALARM, ActionType.CALENDAR, ActionType.PLAY_MEDIA ->
                     Log.w(TAG, "Ignoring ${bound.type} click action ${bound.id}: it needs a transcript")
+                // HANG_UP left a slot in an earlier build, when it was a click
+                // choice; the setting above replaced it. A hand-edited backup
+                // can still supply one, so it is logged and ignored.
+                ActionType.HANG_UP ->
+                    Log.w(TAG, "Ignoring HANG_UP click action ${bound.id}: hang up is now a setting")
             }
         } catch (exception: Exception) {
             // One click's failure must never take the sync service down with it.

@@ -91,6 +91,7 @@ fun ActionsScreen(
 ) {
     val actions by viewModel.actions.collectAsState()
     val clickActions by viewModel.clickActions.collectAsState()
+    val hangUpClickCount by viewModel.hangUpClickCount.collectAsState()
     val deviceType by viewModel.deviceType.collectAsState()
     val selectedCalendarName by viewModel.selectedCalendarName.collectAsState()
     val calendars by viewModel.calendars.collectAsState()
@@ -147,8 +148,9 @@ fun ActionsScreen(
     }
 
     // ANSWER_PHONE_CALLS is what TelecomManager.endCall needs. It is requested
-    // when the user adds a hang up action or picks it for a click slot. Without
-    // it the action still saves and the runner posts an info notification.
+    // when the user adds a hang up action or picks a click count for the hang-up
+    // override. Without it the setting still saves and the runner posts an info
+    // notification.
     val answerPhoneCallsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -297,9 +299,13 @@ fun ActionsScreen(
                     item {
                         RingButtonSection(
                             clickActions = clickActions,
+                            hangUpClickCount = hangUpClickCount,
                             onSetClickAction = { count, action ->
-                                if (action?.type == ActionType.HANG_UP) ensureHangUpPermission()
                                 viewModel.setClickAction(count, action)
+                            },
+                            onSetHangUpClickCount = { count ->
+                                if (count > 0) ensureHangUpPermission()
+                                viewModel.setHangUpClickCount(count)
                             },
                             onChooseContact = chooseContact,
                             voicePreview = voicePreview,
@@ -650,6 +656,9 @@ private fun FakeCallFields(
 /** The three click slots the ring button exposes. */
 private val CLICK_COUNTS = listOf(1, 2, 3)
 
+/** The counts the hang-up override offers; 0 is "Off". */
+private val HANG_UP_CLICK_COUNTS = listOf(0, 1, 2, 3)
+
 /**
  * The ring button's per click-count bindings. It is only shown for the ring,
  * because a pendant has no button to click.
@@ -657,7 +666,9 @@ private val CLICK_COUNTS = listOf(1, 2, 3)
 @Composable
 private fun RingButtonSection(
     clickActions: Map<Int, Action>,
+    hangUpClickCount: Int,
     onSetClickAction: (Int, Action?) -> Unit,
+    onSetHangUpClickCount: (Int) -> Unit,
     onChooseContact: (String) -> Unit,
     voicePreview: FakeCallVoicePreview,
 ) {
@@ -683,6 +694,23 @@ private fun RingButtonSection(
                 onSelect = { onSetClickAction(count, it) },
                 onChooseContact = onChooseContact,
                 voicePreview = voicePreview,
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = stringResource(R.string.actions_hang_up_click_label),
+                style = MaterialTheme.typography.bodyLarge,
+                modifier = Modifier.weight(1f),
+            )
+            DropdownSelector(
+                selectedLabel = hangUpClickCountLabel(hangUpClickCount),
+                options = HANG_UP_CLICK_COUNTS,
+                optionLabel = { hangUpClickCountLabel(it) },
+                onSelect = onSetHangUpClickCount,
             )
         }
     }
@@ -735,7 +763,7 @@ private fun ClickActionRow(
 }
 
 /** The choice a click slot's dropdown offers. NONE unbinds the click. */
-internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK, HANG_UP }
+internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK }
 
 /**
  * True when [action] already stores [choice], so re-selecting it is a no-op.
@@ -752,7 +780,6 @@ private fun isCurrentClickChoice(action: Action?, choice: ClickChoice): Boolean 
         action?.type == ActionType.MEDIA_KEY && action.mediaKey == MediaKey.PREVIOUS
     ClickChoice.FAKE_CALL -> action?.type == ActionType.FAKE_CALL
     ClickChoice.WEBHOOK -> action?.type == ActionType.WEBHOOK
-    ClickChoice.HANG_UP -> action?.type == ActionType.HANG_UP
 }
 
 /**
@@ -777,7 +804,6 @@ internal fun actionForClickChoice(
         ClickChoice.PREVIOUS -> clickAction(ActionType.MEDIA_KEY, MediaKey.PREVIOUS)
         ClickChoice.FAKE_CALL -> clickAction(ActionType.FAKE_CALL, message = fakeCallMessage)
         ClickChoice.WEBHOOK -> clickAction(ActionType.WEBHOOK)
-        ClickChoice.HANG_UP -> clickAction(ActionType.HANG_UP)
     }
 }
 
@@ -818,7 +844,15 @@ private fun clickChoiceLabel(choice: ClickChoice): String = when (choice) {
     ClickChoice.PREVIOUS -> mediaKeyLabel(MediaKey.PREVIOUS)
     ClickChoice.FAKE_CALL -> actionTypeLabel(ActionType.FAKE_CALL)
     ClickChoice.WEBHOOK -> actionTypeLabel(ActionType.WEBHOOK)
-    ClickChoice.HANG_UP -> actionTypeLabel(ActionType.HANG_UP)
+}
+
+/** The label of one hang-up override option; 0 is off. */
+@Composable
+private fun hangUpClickCountLabel(count: Int): String = when (count) {
+    0 -> stringResource(R.string.actions_hang_up_off)
+    1 -> stringResource(R.string.actions_hang_up_clicks_one)
+    2 -> stringResource(R.string.actions_hang_up_clicks_two)
+    else -> stringResource(R.string.actions_hang_up_clicks_three)
 }
 
 @Composable

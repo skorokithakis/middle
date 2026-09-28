@@ -347,29 +347,37 @@ class ActionRunner(context: Context) {
     }
 
     /**
-     * Ends the active call, or rejects one that is ringing, through Telecom.
-     * Requires API 28+ and the ANSWER_PHONE_CALLS runtime permission, which the
-     * Actions screen asks for when the action is added. There is no way to know
-     * whether a call was actually ended, so the action reports a result once
-     * `endCall` was invoked and lets `stop` behave predictably; `endCall`'s
-     * boolean (false = no call to end) is only logged.
+     * Ends the active call, or rejects one that is ringing, through Telecom and
+     * returns Telecom's boolean (false = there was no call to end). Requires API
+     * 28+ and the ANSWER_PHONE_CALLS runtime permission. A missing permission,
+     * an older SDK, an unavailable Telecom manager or a refused call keeps the
+     * existing log and info notification and returns false.
      */
-    private fun runHangUp(): Boolean {
+    fun endCall(): Boolean = attemptEndCall() ?: false
+
+    /**
+     * [endCall] without collapsing "was never attempted" into false: null means
+     * a precondition failed and the caller already got a log and a notification,
+     * while a non-null value is Telecom's own result. The voice HANG_UP action
+     * uses this to keep reporting a result once `endCall` was invoked, even when
+     * there was no call to end.
+     */
+    private fun attemptEndCall(): Boolean? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
             Log.w(TAG, "[action] hang up action matched but it needs Android 9 or newer")
             postInfoNotification(appContext.getString(R.string.hang_up_unsupported_notification_text))
-            return false
+            return null
         }
         if (!hasAnswerPhoneCallsPermission()) {
             Log.w(TAG, "[action] hang up action matched but ANSWER_PHONE_CALLS is not granted")
             postInfoNotification(appContext.getString(R.string.hang_up_permission_notification_text))
-            return false
+            return null
         }
         val telecomManager = appContext.getSystemService(TelecomManager::class.java)
         if (telecomManager == null) {
             Log.w(TAG, "[action] hang up action matched but Telecom is unavailable")
             postInfoNotification(appContext.getString(R.string.hang_up_unavailable_notification_text))
-            return false
+            return null
         }
         // endCall is deprecated since API 29 but still works and is the only way
         // to end a call without being the default dialer, so use it and ignore
@@ -381,13 +389,16 @@ class ActionRunner(context: Context) {
             // The permission can be revoked between the check above and the call.
             Log.w(TAG, "[action] hang up action was refused", exception)
             postInfoNotification(appContext.getString(R.string.hang_up_permission_notification_text))
-            return false
+            return null
         }
         if (!ended) {
             Log.d(TAG, "[action] hang up matched but there was no call to end")
         }
-        return true
+        return ended
     }
+
+    /** The voice HANG_UP action: a result once `endCall` was invoked. */
+    private fun runHangUp(): Boolean = attemptEndCall() != null
 
     private fun insertEvent(calendarId: Long, title: String, command: ParsedCommand) {
         val start = command.start ?: return

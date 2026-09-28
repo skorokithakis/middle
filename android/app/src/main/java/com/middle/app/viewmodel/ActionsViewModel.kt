@@ -29,6 +29,10 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
     private val _clickActions = MutableStateFlow(settings.clickActions)
     val clickActions: StateFlow<Map<Int, Action>> = _clickActions
 
+    // The ring click count that tries to end a call first, 0 for off.
+    private val _hangUpClickCount = MutableStateFlow(settings.hangUpClickCount)
+    val hangUpClickCount: StateFlow<Int> = _hangUpClickCount
+
     // The click slots only apply to the ring, so the screen hides its section
     // for the pendant.
     private val _deviceType = MutableStateFlow(settings.deviceType)
@@ -49,6 +53,7 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
     fun refresh() {
         _actions.value = settings.actions
         _clickActions.value = settings.clickActions
+        _hangUpClickCount.value = settings.hangUpClickCount
         _deviceType.value = settings.deviceType
         refreshSelectedCalendarName()
     }
@@ -101,6 +106,12 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
         if (action == null) updated.remove(count) else updated[count] = action
         settings.clickActions = updated
         _clickActions.value = updated
+    }
+
+    /** Sets the count whose click first tries to end a call; 0 turns it off. */
+    fun setHangUpClickCount(count: Int) {
+        settings.hangUpClickCount = count
+        _hangUpClickCount.value = count
     }
 
     /** Swaps the action with the one above it. The first action does not move. */

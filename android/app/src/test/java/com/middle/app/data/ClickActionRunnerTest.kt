@@ -13,7 +13,11 @@ class ClickActionRunnerTest {
 
     private fun success() = WebhookClient.Result(success = true, code = 200, message = "OK", body = "")
 
-    private fun runner(actions: Map<Int, Action>): ClickActionRunner = ClickActionRunner(
+    private fun runner(
+        actions: Map<Int, Action>,
+        hangUpClickCount: Int = 0,
+        endCall: () -> Boolean = { false },
+    ): ClickActionRunner = ClickActionRunner(
         clickActions = { actions },
         runAction = { hit ->
             runCalls++
@@ -25,6 +29,8 @@ class ClickActionRunnerTest {
             capturedTemplate = template
             success()
         },
+        hangUpClickCount = { hangUpClickCount },
+        endCall = endCall,
     )
 
     private fun action(
@@ -84,13 +90,85 @@ class ClickActionRunnerTest {
     }
 
     @Test
-    fun hangUpRunsThroughActionRunner() {
+    fun staleHangUpClickActionIsIgnored() {
+        // A HANG_UP bound to a click slot by an earlier build is logged and
+        // ignored; hang up is a setting now.
         val action = action("a1", ActionType.HANG_UP)
 
         runner(mapOf(2 to action)).run(2)
 
+        assertEquals(0, runCalls)
+        assertEquals(0, webhookCalls)
+    }
+
+    @Test
+    fun hangUpOverrideEndsTheCallAndSkipsTheSlot() {
+        var endCalls = 0
+        val actions = mapOf(2 to action("a1", ActionType.MEDIA_KEY))
+
+        runner(actions, hangUpClickCount = 2, endCall = { endCalls++; true }).run(2)
+
+        assertEquals(1, endCalls)
+        assertEquals(0, runCalls)
+    }
+
+    @Test
+    fun hangUpOverrideRunsTheSlotWhenNoCallEnded() {
+        var endCalls = 0
+        val actions = mapOf(2 to action("a1", ActionType.MEDIA_KEY))
+
+        runner(actions, hangUpClickCount = 2, endCall = { endCalls++; false }).run(2)
+
+        assertEquals(1, endCalls)
         assertEquals(1, runCalls)
-        assertEquals(action, capturedHit?.action)
+        assertEquals(actions[2], capturedHit?.action)
+    }
+
+    @Test
+    fun hangUpOverrideAppliesToItsCountOnly() {
+        var endCalls = 0
+        val actions = mapOf(3 to action("a1", ActionType.MEDIA_KEY))
+
+        runner(actions, hangUpClickCount = 2, endCall = { endCalls++; true }).run(3)
+
+        assertEquals(0, endCalls)
+        assertEquals(1, runCalls)
+    }
+
+    @Test
+    fun offHangUpOverrideNeverEndsACall() {
+        var endCalls = 0
+        val actions = mapOf(1 to action("a1", ActionType.MEDIA_KEY))
+
+        runner(actions, hangUpClickCount = 0, endCall = { endCalls++; true }).run(1)
+
+        assertEquals(0, endCalls)
+        assertEquals(1, runCalls)
+    }
+
+    @Test
+    fun hangUpOverrideWorksWithNoBoundSlot() {
+        var endCalls = 0
+
+        runner(emptyMap(), hangUpClickCount = 1, endCall = { endCalls++; true }).run(1)
+
+        assertEquals(1, endCalls)
+        assertEquals(0, runCalls)
+    }
+
+    @Test
+    fun aThrowingEndCallIsSwallowed() {
+        val runner = ClickActionRunner(
+            clickActions = { mapOf(1 to action("a1", ActionType.MEDIA_KEY)) },
+            runAction = { runCalls++ },
+            postWebhook = { _, _ -> success() },
+            hangUpClickCount = { 1 },
+            endCall = { throw SecurityException("no call") },
+        )
+
+        runner.run(1)
+
+        assertEquals(0, runCalls)
     }
 
     @Test
@@ -155,6 +233,8 @@ class ClickActionRunnerTest {
             clickActions = { throw IllegalStateException("settings unreadable") },
             runAction = { runCalls++ },
             postWebhook = { _, _ -> success() },
+            hangUpClickCount = { 0 },
+            endCall = { false },
         )
 
         runner.run(1)
@@ -169,6 +249,8 @@ class ClickActionRunnerTest {
             clickActions = { mapOf(1 to action("a1", ActionType.MEDIA_KEY)) },
             runAction = { throw SecurityException("no media session") },
             postWebhook = { _, _ -> success() },
+            hangUpClickCount = { 0 },
+            endCall = { false },
         )
 
         runner.run(1)
@@ -180,6 +262,8 @@ class ClickActionRunnerTest {
             clickActions = { mapOf(1 to action("a1", ActionType.WEBHOOK, webhookUrl = "not a url")) },
             runAction = { },
             postWebhook = { _, _ -> throw IllegalArgumentException("bad url") },
+            hangUpClickCount = { 0 },
+            endCall = { false },
         )
 
         runner.run(1)
