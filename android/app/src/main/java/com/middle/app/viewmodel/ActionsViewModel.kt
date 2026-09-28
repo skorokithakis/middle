@@ -66,6 +66,7 @@ class ActionsViewModel(application: Application) : AndroidViewModel(application)
                 ActionType.FAKE_CALL -> Action.DEFAULT_FAKE_CALL_PATTERN
                 ActionType.PLAY_MEDIA -> Action.DEFAULT_PLAY_MEDIA_PATTERN
                 ActionType.MEDIA_KEY -> Action.DEFAULT_MEDIA_KEY_PATTERN
+                ActionType.HANG_UP -> Action.DEFAULT_HANG_UP_PATTERN
             },
             // A webhook is the catch-all at the end of the chain; the other
             // types normally stop it.

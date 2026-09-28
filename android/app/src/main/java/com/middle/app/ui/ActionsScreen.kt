@@ -146,6 +146,24 @@ fun ActionsScreen(
         }
     }
 
+    // ANSWER_PHONE_CALLS is what TelecomManager.endCall needs. It is requested
+    // when the user adds a hang up action or picks it for a click slot. Without
+    // it the action still saves and the runner posts an info notification.
+    val answerPhoneCallsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (!granted) {
+            Log.w(TAG, "ANSWER_PHONE_CALLS denied; hang up actions cannot end calls")
+        }
+    }
+    val ensureHangUpPermission: () -> Unit = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ANSWER_PHONE_CALLS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            answerPhoneCallsLauncher.launch(Manifest.permission.ANSWER_PHONE_CALLS)
+        }
+    }
+
     // The picker result carries a temporary read grant for the one picked row,
     // so no READ_CONTACTS permission is needed. A cancelled pick has no data
     // URI and is ignored; the row query runs off the main thread because the
@@ -214,6 +232,7 @@ fun ActionsScreen(
                                 DropdownMenuItem(
                                     text = { Text(actionTypeLabel(type)) },
                                     onClick = {
+                                        if (type == ActionType.HANG_UP) ensureHangUpPermission()
                                         viewModel.addAction(type)
                                         showAddMenu = false
                                     },
@@ -279,6 +298,7 @@ fun ActionsScreen(
                         RingButtonSection(
                             clickActions = clickActions,
                             onSetClickAction = { count, action ->
+                                if (action?.type == ActionType.HANG_UP) ensureHangUpPermission()
                                 viewModel.setClickAction(count, action)
                             },
                             onChooseContact = chooseContact,
@@ -316,6 +336,7 @@ private fun actionTypeLabel(type: ActionType): String = when (type) {
     ActionType.FAKE_CALL -> stringResource(R.string.actions_type_fake_call)
     ActionType.PLAY_MEDIA -> stringResource(R.string.actions_type_play_media)
     ActionType.MEDIA_KEY -> stringResource(R.string.actions_type_media_key)
+    ActionType.HANG_UP -> stringResource(R.string.actions_type_hang_up)
 }
 
 /** Reads the name and number of the single row the contact picker returned. */
@@ -714,7 +735,7 @@ private fun ClickActionRow(
 }
 
 /** The choice a click slot's dropdown offers. NONE unbinds the click. */
-internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK }
+internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK, HANG_UP }
 
 /**
  * True when [action] already stores [choice], so re-selecting it is a no-op.
@@ -731,6 +752,7 @@ private fun isCurrentClickChoice(action: Action?, choice: ClickChoice): Boolean 
         action?.type == ActionType.MEDIA_KEY && action.mediaKey == MediaKey.PREVIOUS
     ClickChoice.FAKE_CALL -> action?.type == ActionType.FAKE_CALL
     ClickChoice.WEBHOOK -> action?.type == ActionType.WEBHOOK
+    ClickChoice.HANG_UP -> action?.type == ActionType.HANG_UP
 }
 
 /**
@@ -755,6 +777,7 @@ internal fun actionForClickChoice(
         ClickChoice.PREVIOUS -> clickAction(ActionType.MEDIA_KEY, MediaKey.PREVIOUS)
         ClickChoice.FAKE_CALL -> clickAction(ActionType.FAKE_CALL, message = fakeCallMessage)
         ClickChoice.WEBHOOK -> clickAction(ActionType.WEBHOOK)
+        ClickChoice.HANG_UP -> clickAction(ActionType.HANG_UP)
     }
 }
 
@@ -795,6 +818,7 @@ private fun clickChoiceLabel(choice: ClickChoice): String = when (choice) {
     ClickChoice.PREVIOUS -> mediaKeyLabel(MediaKey.PREVIOUS)
     ClickChoice.FAKE_CALL -> actionTypeLabel(ActionType.FAKE_CALL)
     ClickChoice.WEBHOOK -> actionTypeLabel(ActionType.WEBHOOK)
+    ClickChoice.HANG_UP -> actionTypeLabel(ActionType.HANG_UP)
 }
 
 @Composable

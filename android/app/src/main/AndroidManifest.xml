@@ -27,6 +27,9 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
+    <!-- Hang up actions need to end or reject a call through Telecom -->
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+
     <!-- Restart the sync foreground service after a reboot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 

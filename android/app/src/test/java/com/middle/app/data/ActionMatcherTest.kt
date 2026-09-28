@@ -115,6 +115,22 @@ class ActionMatcherTest {
     }
 
     @Test
+    fun hangUpDefaultPatternMatchesTheCommandButNotInsideASentence() {
+        val action = alarm.copy(
+            id = "hang-up",
+            type = ActionType.HANG_UP,
+            pattern = Action.DEFAULT_HANG_UP_PATTERN,
+        )
+
+        assertEquals(1, plan("hang up", action).hits.size)
+        assertEquals("please", plan("Hang up please", action).hits.single().rest)
+
+        // Anchored at the start, so a plain note about hanging up laundry does
+        // not end the call.
+        assertTrue(plan("I will hang up the washing", action).hits.isEmpty())
+    }
+
+    @Test
     fun catchAllLeavesAnEmptyRest() {
         val catchAll = alarm.copy(
             id = "hook",

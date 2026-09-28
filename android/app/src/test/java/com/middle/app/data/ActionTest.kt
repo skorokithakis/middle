@@ -239,6 +239,18 @@ class ActionTest {
     }
 
     @Test
+    fun hangUpRoundTripsThroughJson() {
+        val action = Action(
+            id = "a7",
+            enabled = true,
+            type = ActionType.HANG_UP,
+            pattern = Action.DEFAULT_HANG_UP_PATTERN,
+            stop = true,
+        )
+        assertEquals(listOf(action), Action.fromJson(Action.toJson(listOf(action))))
+    }
+
+    @Test
     fun absentMediaKeyReadsAsPlayPause() {
         val json = """
             [

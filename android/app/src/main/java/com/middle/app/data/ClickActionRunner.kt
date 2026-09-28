@@ -37,7 +37,7 @@ class ClickActionRunner(
                 // on their own are offered in the click-action UI. The others
                 // are transcript-dependent and ignored if a hand-edited backup
                 // supplies one.
-                ActionType.FAKE_CALL, ActionType.MEDIA_KEY ->
+                ActionType.FAKE_CALL, ActionType.MEDIA_KEY, ActionType.HANG_UP ->
                     runAction(ActionHit(bound, rest = "", index = 0))
                 ActionType.ALARM, ActionType.CALENDAR, ActionType.PLAY_MEDIA ->
                     Log.w(TAG, "Ignoring ${bound.type} click action ${bound.id}: it needs a transcript")

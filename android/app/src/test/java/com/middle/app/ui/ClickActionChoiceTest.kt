@@ -37,6 +37,7 @@ class ClickActionChoiceTest {
         val cases = mapOf(
             ClickChoice.FAKE_CALL to ActionType.FAKE_CALL,
             ClickChoice.WEBHOOK to ActionType.WEBHOOK,
+            ClickChoice.HANG_UP to ActionType.HANG_UP,
         )
         for ((choice, type) in cases) {
             val action = requireNotNull(actionForClickChoice(null, choice))
@@ -48,7 +49,7 @@ class ClickActionChoiceTest {
     @Test
     fun everyClickActionIsEnabledAndHasNoPatternOrStop() {
         val actions = ClickChoice.entries.mapNotNull { actionForClickChoice(null, it) }
-        assertEquals(5, actions.size)
+        assertEquals(6, actions.size)
         for (action in actions) {
             assertTrue(action.enabled)
             assertEquals("", action.pattern)

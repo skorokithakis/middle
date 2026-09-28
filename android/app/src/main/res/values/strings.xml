@@ -32,6 +32,7 @@
     <string name="actions_type_fake_call">Fake call</string>
     <string name="actions_type_play_media">Play media</string>
     <string name="actions_type_media_key">Media key</string>
+    <string name="actions_type_hang_up">Hang up</string>
     <string name="actions_media_key_label">Media key</string>
     <string name="actions_media_key_play_pause">Play/pause</string>
     <string name="actions_media_key_next">Next track</string>
@@ -72,6 +73,9 @@
     <string name="alarm_could_not_set_notification_text">Could not set alarm</string>
     <string name="calendar_none_notification_text">Choose a calendar in Actions to add reminders</string>
     <string name="fake_call_account_disabled_notification_text">Enable Middle in Calling accounts to make fake calls</string>
+    <string name="hang_up_permission_notification_text">Hang up needs the \"Answer phone calls\" permission</string>
+    <string name="hang_up_unsupported_notification_text">Hanging up calls needs Android 9 or newer</string>
+    <string name="hang_up_unavailable_notification_text">Could not reach the phone app to hang up</string>
     <string name="play_media_no_query_notification_text">Could not read a song to play</string>
     <string name="play_media_missing_credentials_notification_text">Spotify actions need a Client ID and Client Secret</string>
     <string name="play_media_no_result_notification_text">No Spotify result for %1$s</string>

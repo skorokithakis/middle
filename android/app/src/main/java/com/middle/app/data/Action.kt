@@ -12,6 +12,7 @@ enum class ActionType {
     FAKE_CALL,
     PLAY_MEDIA,
     MEDIA_KEY,
+    HANG_UP,
 }
 
 /** The transport key a MEDIA_KEY action sends to the system. */
@@ -73,6 +74,9 @@ data class Action(
         // matching "next track"/"previous song" here would toggle playback
         // instead of skipping. Skip actions need an explicit pattern and key.
         const val DEFAULT_MEDIA_KEY_PATTERN = """^(pause|resume)\b"""
+        // Anchored at the start so a normal note like "I will hang up the
+        // washing" does not fire.
+        const val DEFAULT_HANG_UP_PATTERN = """^hang up\b"""
 
         // The ring button supports one, two or three clicks.
         private const val MIN_CLICK_COUNT = 1

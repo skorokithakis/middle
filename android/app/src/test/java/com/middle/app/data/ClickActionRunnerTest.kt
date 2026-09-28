@@ -84,6 +84,16 @@ class ClickActionRunnerTest {
     }
 
     @Test
+    fun hangUpRunsThroughActionRunner() {
+        val action = action("a1", ActionType.HANG_UP)
+
+        runner(mapOf(2 to action)).run(2)
+
+        assertEquals(1, runCalls)
+        assertEquals(action, capturedHit?.action)
+    }
+
+    @Test
     fun webhookPostsOnceWithTheConfiguredTemplate() {
         val actions = mapOf(
             1 to action(
