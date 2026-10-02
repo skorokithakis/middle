@@ -3,10 +3,10 @@ package com.middle.app.ble
 import com.middle.app.data.Settings
 
 /** Shown when a device's battery reading is unknown. */
-const val UNKNOWN_BATTERY_VOLTAGE = "N/A"
+const val UNKNOWN_BATTERY_VOLTAGE = Settings.UNKNOWN_BATTERY_VOLTAGE
 
 /** The battery-reading key of the single pendant. */
-const val PENDANT_DEVICE_KEY = "pendant"
+const val PENDANT_DEVICE_KEY = Settings.PENDANT_DEVICE_KEY
 
 private const val RING_DEVICE_KEY_PREFIX = "ring:"
 

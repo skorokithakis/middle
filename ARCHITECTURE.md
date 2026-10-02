@@ -399,11 +399,15 @@ reads voltage from the `batteryVoltageMilliV` field of the vendor's collection
 metadata during a transfer. It is a per-collection value, not a live battery
 query. Readings are tracked per device (the device type, plus the ring's
 address) so switching device type or ring never shows another device's value.
-For the ring a missing (null or zero) reading leaves the current value alone
-instead of becoming `0.00V`; the pendant path is unchanged, so a non-null
-pendant 0mV still displays and persists as `0.00V` and still runs the
-low-battery alert. Only the pendant's low-battery alert is posted; the ring has
-no alert.
+Each device's last reading is also persisted under that same per-device key, so
+the selected device's value is shown again after an app or service restart. The
+pendant keeps its original stored key so an upgrade preserves a value saved
+before readings were stored per device; a ring that has never reported one
+shows `N/A`. For the ring a missing (null or zero) reading leaves the current
+value alone instead of becoming `0.00V` and is not persisted; the pendant path
+is unchanged, so a non-null pendant 0mV still displays and persists as `0.00V`
+and still runs the low-battery alert. Only the pendant's low-battery alert is
+posted; the ring has no alert.
 
 `BootReceiver` restarts `SyncForegroundService` after `BOOT_COMPLETED` when the
 runtime permissions it needs are already granted; otherwise the user must open

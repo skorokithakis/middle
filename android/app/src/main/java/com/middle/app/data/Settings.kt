@@ -211,9 +211,21 @@ class Settings(context: Context) {
             .apply()
     }
 
-    var lastBatteryVoltage: String
-        get() = prefs.getString(KEY_LAST_BATTERY_VOLTAGE, "N/A") ?: "N/A"
-        set(value) = prefs.edit().putString(KEY_LAST_BATTERY_VOLTAGE, value).apply()
+    /**
+     * The last battery reading stored for [deviceKey], or
+     * [UNKNOWN_BATTERY_VOLTAGE] if that device has never reported one. The value
+     * survives a restart, so the status bar can show the selected device's last
+     * reading before it reconnects.
+     */
+    fun lastBatteryVoltage(deviceKey: String): String {
+        val key = batteryPreferenceKey(deviceKey)
+        return prefs.getString(key, UNKNOWN_BATTERY_VOLTAGE) ?: UNKNOWN_BATTERY_VOLTAGE
+    }
+
+    /** Stores [value] as [deviceKey]'s last battery reading. */
+    fun setLastBatteryVoltage(deviceKey: String, value: String) {
+        prefs.edit().putString(batteryPreferenceKey(deviceKey), value).apply()
+    }
 
     var lastBatteryNotificationTime: Long
         get() = prefs.getLong(KEY_LAST_BATTERY_NOTIFICATION_TIME, 0L)
@@ -439,6 +451,26 @@ class Settings(context: Context) {
 
         const val DEVICE_TYPE_PENDANT = "pendant"
         const val DEVICE_TYPE_RING = "ring"
+
+        /** The battery-reading key of the single pendant. */
+        const val PENDANT_DEVICE_KEY = "pendant"
+
+        /** Shown when a device's battery reading is unknown. */
+        const val UNKNOWN_BATTERY_VOLTAGE = "N/A"
+
+        /**
+         * Maps a battery device key ('pendant' or 'ring:<address>') to the
+         * preference key that holds its reading. The pendant keeps the original
+         * global key so a value saved before readings were stored per device
+         * still loads after an upgrade; a ring gets its own key derived from its
+         * address.
+         */
+        internal fun batteryPreferenceKey(deviceKey: String): String =
+            if (deviceKey == PENDANT_DEVICE_KEY) {
+                KEY_LAST_BATTERY_VOLTAGE
+            } else {
+                "${KEY_LAST_BATTERY_VOLTAGE}_$deviceKey"
+            }
 
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_ELEVENLABS_API_KEY = "elevenlabs_api_key"

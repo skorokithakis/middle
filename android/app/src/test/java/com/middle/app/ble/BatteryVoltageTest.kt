@@ -19,6 +19,40 @@ class BatteryVoltageTest {
     }
 
     @Test
+    fun pendantKeepsTheLegacyPreferenceKeyAndRingsGetTheirOwn() {
+        // The literal pins the pre-per-device preference key so a value saved by
+        // an older build still restores after an upgrade.
+        assertEquals("last_battery_voltage", Settings.batteryPreferenceKey(PENDANT_DEVICE_KEY))
+        assertEquals("last_battery_voltage_ring:AA:BB", Settings.batteryPreferenceKey(ringA))
+        assertNotEquals(
+            Settings.batteryPreferenceKey(ringA),
+            Settings.batteryPreferenceKey(ringB),
+        )
+    }
+
+    @Test
+    fun storedReadingIsRestoredForTheSelectedDevice() {
+        val tracker = BatteryVoltageTracker()
+        // startSyncLoop passes the device's stored value as the fallback.
+        assertEquals("3.85V", tracker.select(PENDANT_DEVICE_KEY, "3.85V"))
+        assertEquals("4.05V", tracker.select(ringA, "4.05V"))
+        // A ring that has never reported has no stored value, so it shows N/A.
+        assertEquals(UNKNOWN_BATTERY_VOLTAGE, tracker.select(ringB, UNKNOWN_BATTERY_VOLTAGE))
+    }
+
+    @Test
+    fun ringZeroAndNullReadingsProduceNoValueToPersist() {
+        val tracker = BatteryVoltageTracker()
+        tracker.select(ringA)
+        // Null and zero are not voltages, so the ring callback gets null and
+        // never overwrites the stored reading.
+        assertNull(tracker.reportRing(ringA, null))
+        assertNull(tracker.reportRing(ringA, 0))
+        // A real reading is returned, which is what the callback persists.
+        assertEquals("3.90V", tracker.reportRing(ringA, 3900))
+    }
+
+    @Test
     fun formatsEveryNonNullPendantReadingIncludingZero() {
         assertEquals("0.00V", formatBatteryVoltage(0))
         assertEquals("0.50V", formatBatteryVoltage(500))

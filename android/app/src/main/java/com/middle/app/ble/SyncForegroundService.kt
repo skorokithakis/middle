@@ -144,11 +144,11 @@ class SyncForegroundService : Service() {
         val deviceType = settings.deviceType
         _activeDeviceType.value = deviceType
         val deviceKey = batteryDeviceKey(deviceType, settings.ringDeviceAddress)
-        // The pendant's reading survives a restart in Settings; a ring reading
-        // only lives for the session, since the ring has no live battery query.
-        val fallback =
-            if (deviceType == Settings.DEVICE_TYPE_PENDANT) settings.lastBatteryVoltage else UNKNOWN_BATTERY_VOLTAGE
-        _batteryVoltage.value = batteryTracker.select(deviceKey, fallback)
+        // Both device types restore the last reading saved for their own key,
+        // so the bar shows the selected device's value again before it
+        // reconnects instead of resetting to N/A on every restart.
+        _batteryVoltage.value =
+            batteryTracker.select(deviceKey, settings.lastBatteryVoltage(deviceKey))
         // Cancel the old loop synchronously, then wait for its teardown inside
         // the new loop. A ring loop owns a session scope that the vendor uses to
         // launch scanning and transfer work, and waiting for the loop to finish
@@ -233,8 +233,13 @@ class SyncForegroundService : Service() {
                     },
                     onBacklogSkipped = { count -> postBacklogSkippedNotification(count) },
                     onBatteryVoltage = { millivolts ->
-                        batteryTracker.reportRing(ringDeviceKey, millivolts)
-                            ?.let { _batteryVoltage.value = it }
+                        // reportRing returns null for a null/zero reading or a
+                        // device that is no longer selected, so only a real
+                        // reading for this ring is published and persisted.
+                        batteryTracker.reportRing(ringDeviceKey, millivolts)?.let { text ->
+                            _batteryVoltage.value = text
+                            settings.setLastBatteryVoltage(ringDeviceKey, text)
+                        }
                     },
                     onClicks = { clicks ->
                         // Fire-and-forget on the service scope rather than the
@@ -409,13 +414,13 @@ class SyncForegroundService : Service() {
                 val formatted = formatBatteryVoltage(millivolts)
                 batteryTracker.reportPendant(PENDANT_DEVICE_KEY, millivolts)
                     ?.let { _batteryVoltage.value = it }
-                settings.lastBatteryVoltage = formatted
+                settings.setLastBatteryVoltage(PENDANT_DEVICE_KEY, formatted)
                 Log.d(TAG, "Battery voltage: $formatted ($millivolts mV)")
                 maybePostBatteryLowNotification(millivolts)
             } else {
                 batteryTracker.reportUnavailable(PENDANT_DEVICE_KEY)
                     ?.let { _batteryVoltage.value = it }
-                settings.lastBatteryVoltage = UNKNOWN_BATTERY_VOLTAGE
+                settings.setLastBatteryVoltage(PENDANT_DEVICE_KEY, UNKNOWN_BATTERY_VOLTAGE)
                 Log.d(TAG, "Voltage characteristic not available.")
             }
 
