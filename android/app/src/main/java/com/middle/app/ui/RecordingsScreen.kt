@@ -55,6 +55,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
@@ -335,6 +336,8 @@ private fun RecordingItem(
 ) {
     val context = LocalContext.current
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var isTranscriptExpanded by remember { mutableStateOf(false) }
+    var transcriptOverflows by remember { mutableStateOf(false) }
 
     if (showDeleteDialog) {
         AlertDialog(
@@ -440,7 +443,17 @@ private fun RecordingItem(
                 Text(
                     text = recording.transcriptText ?: "",
                     style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 3,
+                    maxLines = if (isTranscriptExpanded) Int.MAX_VALUE else 3,
+                    overflow = TextOverflow.Ellipsis,
+                    onTextLayout = { result -> transcriptOverflows = result.hasVisualOverflow },
+                    // Only the overflowing transcript is a tap target, so a tap on
+                    // a short transcript falls through to the card and toggles
+                    // playback. Keep it tappable while expanded to collapse it.
+                    modifier = if (isTranscriptExpanded || transcriptOverflows) {
+                        Modifier.clickable { isTranscriptExpanded = !isTranscriptExpanded }
+                    } else {
+                        Modifier
+                    },
                 )
             } else if (isPending) {
                 Spacer(modifier = Modifier.height(8.dp))
