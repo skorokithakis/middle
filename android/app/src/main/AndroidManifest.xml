@@ -36,6 +36,12 @@
     <!-- Record a voice note from the phone microphone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Take one photo silently for TAKE_PHOTO actions -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Android 9 and below need this to write the photo's MediaStore row -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+
     <!-- Network for OpenAI transcription -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Pipeline queue watches connectivity to gate retries -->
@@ -44,6 +50,14 @@
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />
+
+    <!-- TAKE_PHOTO is optional, so the app still installs without a camera. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
 
     <!-- Package visibility for TextToSpeech on Android 11+: without this the
          platform cannot find the TTS engine for a fake call's message. -->
@@ -96,6 +110,20 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- TAKE_PHOTO captures from a visible activity because Android blocks
+             camera access from a background service. It draws no UI, and its
+             own task keeps it from pulling the rest of Middle in front of the
+             app the user was using. Config changes are absorbed so a rotation
+             or UI mode change cannot recreate it and start a second capture. -->
+        <activity
+            android:name=".PhotoCaptureActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Middle.Capture" />
 
         <service
             android:name=".ble.SyncForegroundService"

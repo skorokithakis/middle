@@ -131,6 +131,23 @@ class ActionMatcherTest {
     }
 
     @Test
+    fun takePhotoDefaultPatternMatchesTheCommandButNotInsideASentence() {
+        val action = alarm.copy(
+            id = "photo",
+            type = ActionType.TAKE_PHOTO,
+            pattern = Action.DEFAULT_TAKE_PHOTO_PATTERN,
+        )
+
+        assertEquals(1, plan("take a photo", action).hits.size)
+        assertEquals(1, plan("Photo", action).hits.size)
+        assertEquals("please", plan("picture please", action).hits.single().rest)
+
+        // Anchored at the start, so a plain note about a picture does not take
+        // one by surprise.
+        assertTrue(plan("I took a picture of the garden", action).hits.isEmpty())
+    }
+
+    @Test
     fun catchAllLeavesAnEmptyRest() {
         val catchAll = alarm.copy(
             id = "hook",

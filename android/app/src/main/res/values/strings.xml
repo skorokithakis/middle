@@ -33,6 +33,7 @@
     <string name="actions_type_play_media">Play media</string>
     <string name="actions_type_media_key">Media key</string>
     <string name="actions_type_hang_up">Hang up</string>
+    <string name="actions_type_take_photo">Take photo</string>
     <string name="actions_media_key_label">Media key</string>
     <string name="actions_media_key_play_pause">Play/pause</string>
     <string name="actions_media_key_next">Next track</string>
@@ -89,6 +90,11 @@
     <string name="play_media_refused_notification_text">Spotify refused the request</string>
     <string name="play_media_liked_songs_label">Liked Songs</string>
     <string name="play_media_playing_notification_text">Playing %1$s</string>
+    <string name="take_photo_permission_notification_text">Take photo needs the camera permission</string>
+    <string name="take_photo_storage_permission_notification_text">Take photo needs the storage permission</string>
+    <string name="take_photo_tap_notification_text">Tap to take a photo</string>
+    <string name="take_photo_saved_notification_text">Photo saved to Pictures/Middle</string>
+    <string name="take_photo_failed_notification_text">Could not take photo</string>
     <string name="calendar_default_title">Middle reminder</string>
     <string name="calendar_added_notification_text">Reminder added: %1$s, %2$s</string>
     <string name="calendar_added_all_day_notification_text">Reminder added: %1$s, %2$s all day</string>

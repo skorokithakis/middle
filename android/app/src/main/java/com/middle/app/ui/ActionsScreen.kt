@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.util.Log
@@ -166,6 +167,35 @@ fun ActionsScreen(
         }
     }
 
+    // CAMERA is what the capture activity needs. Android 9 and below also need
+    // WRITE_EXTERNAL_STORAGE for the MediaStore row's explicit path. It is
+    // requested when the user adds a take-photo action or binds one to a click.
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { results ->
+        if (results[Manifest.permission.CAMERA] != true) {
+            Log.w(TAG, "CAMERA denied; take photo actions cannot take photos")
+        }
+    }
+    val ensureCameraPermission: () -> Unit = {
+        val missing = buildList {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                add(Manifest.permission.CAMERA)
+            }
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }
+        }
+        if (missing.isNotEmpty()) cameraPermissionLauncher.launch(missing.toTypedArray())
+    }
+
     // The picker result carries a temporary read grant for the one picked row,
     // so no READ_CONTACTS permission is needed. A cancelled pick has no data
     // URI and is ignored; the row query runs off the main thread because the
@@ -235,6 +265,7 @@ fun ActionsScreen(
                                     text = { Text(actionTypeLabel(type)) },
                                     onClick = {
                                         if (type == ActionType.HANG_UP) ensureHangUpPermission()
+                                        if (type == ActionType.TAKE_PHOTO) ensureCameraPermission()
                                         viewModel.addAction(type)
                                         showAddMenu = false
                                     },
@@ -301,6 +332,7 @@ fun ActionsScreen(
                             clickActions = clickActions,
                             hangUpClickCount = hangUpClickCount,
                             onSetClickAction = { count, action ->
+                                if (action?.type == ActionType.TAKE_PHOTO) ensureCameraPermission()
                                 viewModel.setClickAction(count, action)
                             },
                             onSetHangUpClickCount = { count ->
@@ -343,6 +375,7 @@ private fun actionTypeLabel(type: ActionType): String = when (type) {
     ActionType.PLAY_MEDIA -> stringResource(R.string.actions_type_play_media)
     ActionType.MEDIA_KEY -> stringResource(R.string.actions_type_media_key)
     ActionType.HANG_UP -> stringResource(R.string.actions_type_hang_up)
+    ActionType.TAKE_PHOTO -> stringResource(R.string.actions_type_take_photo)
 }
 
 /** Reads the name and number of the single row the contact picker returned. */
@@ -763,7 +796,7 @@ private fun ClickActionRow(
 }
 
 /** The choice a click slot's dropdown offers. NONE unbinds the click. */
-internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK }
+internal enum class ClickChoice { NONE, PLAY_PAUSE, NEXT, PREVIOUS, FAKE_CALL, WEBHOOK, TAKE_PHOTO }
 
 /**
  * True when [action] already stores [choice], so re-selecting it is a no-op.
@@ -780,6 +813,7 @@ private fun isCurrentClickChoice(action: Action?, choice: ClickChoice): Boolean 
         action?.type == ActionType.MEDIA_KEY && action.mediaKey == MediaKey.PREVIOUS
     ClickChoice.FAKE_CALL -> action?.type == ActionType.FAKE_CALL
     ClickChoice.WEBHOOK -> action?.type == ActionType.WEBHOOK
+    ClickChoice.TAKE_PHOTO -> action?.type == ActionType.TAKE_PHOTO
 }
 
 /**
@@ -804,6 +838,7 @@ internal fun actionForClickChoice(
         ClickChoice.PREVIOUS -> clickAction(ActionType.MEDIA_KEY, MediaKey.PREVIOUS)
         ClickChoice.FAKE_CALL -> clickAction(ActionType.FAKE_CALL, message = fakeCallMessage)
         ClickChoice.WEBHOOK -> clickAction(ActionType.WEBHOOK)
+        ClickChoice.TAKE_PHOTO -> clickAction(ActionType.TAKE_PHOTO)
     }
 }
 
@@ -817,8 +852,9 @@ private fun clickAction(
     type = type,
     pattern = "",
     stop = false,
-    // A click slot is a FAKE_CALL or a WEBHOOK; the default body keeps a new
-    // webhook usable immediately. A MEDIA_KEY slot never reads the template.
+    // A click slot is a FAKE_CALL, a TAKE_PHOTO or a WEBHOOK; the default body
+    // keeps a new webhook usable immediately. A MEDIA_KEY slot never reads the
+    // template.
     webhookBodyTemplate = if (type == ActionType.MEDIA_KEY) {
         ""
     } else {
@@ -844,6 +880,7 @@ private fun clickChoiceLabel(choice: ClickChoice): String = when (choice) {
     ClickChoice.PREVIOUS -> mediaKeyLabel(MediaKey.PREVIOUS)
     ClickChoice.FAKE_CALL -> actionTypeLabel(ActionType.FAKE_CALL)
     ClickChoice.WEBHOOK -> actionTypeLabel(ActionType.WEBHOOK)
+    ClickChoice.TAKE_PHOTO -> actionTypeLabel(ActionType.TAKE_PHOTO)
 }
 
 /** The label of one hang-up override option; 0 is off. */

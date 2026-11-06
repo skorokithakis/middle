@@ -166,5 +166,8 @@
  `./gradlew installDebug`.
 - Dependencies: Silero VAD (`com.github.gkonovalov.android-vad:silero`) is only
   published on JitPack, so `settings.gradle.kts` adds the `https://jitpack.io` repo.
+- TAKE_PHOTO uses CameraX (`androidx.camera:camera-core`, `camera-camera2`,
+  `camera-lifecycle`, version pinned in `android/app/build.gradle.kts`) for the
+  rear-camera capture and save to `Pictures/Middle`.
 - Build environment: the default Java 25 and the read-only `$HOME` break Gradle, so
   set `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64`, `ANDROID_HOME=/home/stavros/.cache/android-sdk` and `GRADLE_USER_HOME=/home/stavros/.cache/gradle-home`.

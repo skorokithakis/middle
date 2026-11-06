@@ -73,6 +73,10 @@ class ClickActionRunner(
                     )
                     runAction(ActionHit(bound, rest = "", index = 0))
                 }
+                ActionType.TAKE_PHOTO -> {
+                    WebhookLog.info("Ring click $clickCount: running TAKE_PHOTO")
+                    runAction(ActionHit(bound, rest = "", index = 0))
+                }
                 ActionType.ALARM, ActionType.CALENDAR, ActionType.PLAY_MEDIA -> {
                     Log.w(TAG, "Ignoring ${bound.type} click action ${bound.id}: it needs a transcript")
                     WebhookLog.info(

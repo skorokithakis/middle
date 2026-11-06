@@ -22,6 +22,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.middle.app.MainActivity
 import com.middle.app.MiddleApplication
+import com.middle.app.PhotoCaptureActivity
 import com.middle.app.R
 import com.middle.app.telecom.FakeCallAccount
 import com.middle.app.transcription.CommandKind
@@ -38,8 +39,8 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Executes an ALARM, CALENDAR, FAKE_CALL, PLAY_MEDIA, MEDIA_KEY or HANG_UP
- * [ActionHit] against the system.
+ * Executes an ALARM, CALENDAR, FAKE_CALL, PLAY_MEDIA, MEDIA_KEY, HANG_UP or
+ * TAKE_PHOTO [ActionHit] against the system.
  *
  * [run] blocks while it calls the time parser and writes to a provider, so the
  * caller runs it on [kotlinx.coroutines.Dispatchers.IO]. It returns true only
@@ -48,12 +49,12 @@ import java.util.Locale
  * not this class's job and always reports no result.
  *
  * Every notification uses the `middle_actions` channel. Successes, the
- * tap-to-set alarm and tap-to-play media use
+ * tap-to-set alarm, tap-to-play media and tap-to-take-photo use
  * [MiddleApplication.ACTIONS_NOTIFICATION_ID] so a later result replaces the
  * pending one; failures use
  * [MiddleApplication.ACTIONS_INFO_NOTIFICATION_ID] so they cannot replace it.
- * The tap-to-set alarm and tap-to-play media are the only notifications that do
- * not open the app.
+ * The tap-to-set alarm, tap-to-play media and tap-to-take-photo are the only
+ * notifications that do not open the app.
  */
 class ActionRunner(context: Context) {
 
@@ -87,6 +88,7 @@ class ActionRunner(context: Context) {
             ActionType.PLAY_MEDIA -> runPlayMedia(hit)
             ActionType.MEDIA_KEY -> runMediaKey(hit.action)
             ActionType.HANG_UP -> runHangUp()
+            ActionType.TAKE_PHOTO -> runTakePhoto()
         }
     }
 
@@ -320,7 +322,7 @@ class ActionRunner(context: Context) {
             return true
         }
 
-        postTapToPlayNotification(intent, text)
+        postTapNotification(intent, text)
         return true
     }
 
@@ -406,6 +408,51 @@ class ActionRunner(context: Context) {
     /** The voice HANG_UP action: a result once `endCall` was invoked. */
     private fun runHangUp(): Boolean = attemptEndCall() != null
 
+    /**
+     * Starts [PhotoCaptureActivity] to take one photo with the rear camera.
+     * Android 11+ blocks camera access from a background service, so the
+     * capture runs in a foreground activity; starting that activity from the
+     * background needs the overlay permission, and without it the photo is
+     * offered as a notification the user taps. A missing CAMERA permission is
+     * reported and produces no result.
+     */
+    private fun runTakePhoto(): Boolean {
+        if (!hasCameraPermission()) {
+            Log.w(TAG, "[action] take photo action matched but CAMERA is not granted")
+            WebhookLog.error("Take photo failed: CAMERA is not granted")
+            postInfoNotification(appContext.getString(R.string.take_photo_permission_notification_text))
+            return false
+        }
+        val intent = Intent(appContext, PhotoCaptureActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+        // Starting an activity from the background needs the overlay permission.
+        // Without it the photo is offered as a notification the user taps.
+        if (android.provider.Settings.canDrawOverlays(appContext)) {
+            try {
+                appContext.startActivity(intent)
+            } catch (exception: ActivityNotFoundException) {
+                Log.w(TAG, "[action] the photo capture activity is missing", exception)
+                WebhookLog.error("Take photo failed: capture activity not found")
+                postInfoNotification(appContext.getString(R.string.take_photo_failed_notification_text))
+                return false
+            } catch (exception: SecurityException) {
+                Log.w(TAG, "[action] the photo capture activity was refused", exception)
+                WebhookLog.error("Take photo failed: capture activity refused")
+                postInfoNotification(appContext.getString(R.string.take_photo_failed_notification_text))
+                return false
+            }
+            return true
+        }
+
+        postTapNotification(
+            intent,
+            appContext.getString(R.string.take_photo_tap_notification_text),
+        )
+        return true
+    }
+
     private fun insertEvent(calendarId: Long, title: String, command: ParsedCommand) {
         val start = command.start ?: return
         val zone = ZoneId.systemDefault()
@@ -479,7 +526,7 @@ class ActionRunner(context: Context) {
         )
     }
 
-    private fun postTapToPlayNotification(intent: Intent, text: String) {
+    private fun postTapNotification(intent: Intent, text: String) {
         val pendingIntent = PendingIntent.getActivity(
             appContext,
             0,
@@ -519,6 +566,10 @@ class ActionRunner(context: Context) {
 
     private fun hasAnswerPhoneCallsPermission(): Boolean =
         ContextCompat.checkSelfPermission(appContext, Manifest.permission.ANSWER_PHONE_CALLS) ==
+            PackageManager.PERMISSION_GRANTED
+
+    private fun hasCameraPermission(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
     companion object {

@@ -251,6 +251,18 @@ class ActionTest {
     }
 
     @Test
+    fun takePhotoRoundTripsThroughJson() {
+        val action = Action(
+            id = "a8",
+            enabled = true,
+            type = ActionType.TAKE_PHOTO,
+            pattern = Action.DEFAULT_TAKE_PHOTO_PATTERN,
+            stop = false,
+        )
+        assertEquals(listOf(action), Action.fromJson(Action.toJson(listOf(action))))
+    }
+
+    @Test
     fun absentMediaKeyReadsAsPlayPause() {
         val json = """
             [

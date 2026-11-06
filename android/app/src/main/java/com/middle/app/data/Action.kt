@@ -13,6 +13,7 @@ enum class ActionType {
     PLAY_MEDIA,
     MEDIA_KEY,
     HANG_UP,
+    TAKE_PHOTO,
 }
 
 /** The transport key a MEDIA_KEY action sends to the system. */
@@ -77,6 +78,9 @@ data class Action(
         // Anchored at the start so a normal note like "I will hang up the
         // washing" does not fire.
         const val DEFAULT_HANG_UP_PATTERN = """^hang up\b"""
+        // Anchored at the start so a normal note like "I took a picture of the
+        // garden" does not fire.
+        const val DEFAULT_TAKE_PHOTO_PATTERN = """^(take a )?(photo|picture)\b"""
 
         // The ring button supports one, two or three clicks.
         private const val MIN_CLICK_COUNT = 1

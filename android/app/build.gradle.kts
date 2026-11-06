@@ -95,6 +95,12 @@ dependencies {
     // JSON parsing for API responses.
     implementation("org.json:json:20231013")
 
+    // CameraX for the TAKE_PHOTO action's silent rear-camera capture.
+    val cameraXVersion = "1.4.2"
+    implementation("androidx.camera:camera-core:$cameraXVersion")
+    implementation("androidx.camera:camera-camera2:$cameraXVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
+
     // Encrypted storage for API key.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 

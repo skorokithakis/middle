@@ -22,9 +22,9 @@ middle/
 │       │   ├── IndexSyncLoop.kt        # Drives the vendor library for the Index 01 ring
 │       │   └── SyncForegroundService.kt# Foreground service keeping BLE sync alive in background
 │       ├── data/         # Recordings, actions, webhook client, pipeline queue, settings
-│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY/HANG_UP enum; list persisted as one JSON array string, click actions as one JSON object
+│       │   ├── Action.kt               # Action data class + ALARM/CALENDAR/WEBHOOK/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY/HANG_UP/TAKE_PHOTO enum; list persisted as one JSON array string, click actions as one JSON object
 │       │   ├── ActionMatcher.kt        # Pure ordered pattern/rest rules, no time parsing (unit tested)
-│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY/HANG_UP hits: time-parse, clock app, calendar write, Telecom fake call or call end, Spotify Web API search or a media transport key
+│       │   ├── ActionRunner.kt         # Runs ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY/HANG_UP/TAKE_PHOTO hits: time-parse, clock app, calendar write, Telecom fake call or call end, Spotify Web API search, media transport key or photo capture
 │       │   ├── ClickActionRunner.kt    # Runs the action bound to a ring button click count (one best-effort attempt, no queueing)
 │       │   ├── PipelineQueue.kt        # Durable transcribe-then-webhook jobs; runs the action phase after a transcription
 │       │   ├── PipelinePolicy.kt       # Pure backoff/outcome rules (unit tested)
@@ -49,7 +49,7 @@ middle/
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
 │       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
 │       ├── ui/           # Compose screens
-│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call (voice picker and preview)/play-media/hang-up, reorder/delete; contact picker, calendar picker, ANSWER_PHONE_CALLS prompt and overlay-permission card
+│       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call (voice picker and preview)/play-media/hang-up/take-photo, reorder/delete; contact picker, calendar picker, ANSWER_PHONE_CALLS and CAMERA prompts and overlay-permission card
 │       │   ├── FakeCallVoice.kt        # Screen-scoped TextToSpeech listing the installed voices and previewing a fake call's message
 │       │   ├── RecordingsScreen.kt     # List of recordings with play/share/delete/retry-pipeline
 │       │   ├── SettingsScreen.kt       # Provider/API key, Spotify Client ID/Secret, toggles, sync device and ring picker, settings backup export/import
@@ -61,6 +61,7 @@ middle/
 │       │   └── SettingsViewModel.kt    # Thin wrapper exposing Settings as StateFlows; reads bonded devices for the ring picker; reads/writes backup files
 │       ├── MainActivity.kt             # Permission request, starts SyncForegroundService, nav host
 │       ├── AssistActivity.kt           # System ASSIST/VOICE_COMMAND target: VAD mic capture in a dialog card
+│       ├── PhotoCaptureActivity.kt     # No-UI rear-camera capture for TAKE_PHOTO actions, saves to Pictures/Middle
 │       ├── BootReceiver.kt             # Restarts SyncForegroundService after reboot when permissions allow
 │       └── MiddleApplication.kt        # App singleton: RecordingsRepository, PipelineQueue, notification channels
 ├── platformio.ini        # PlatformIO build config
@@ -226,11 +227,12 @@ Key details:
 
 Actions are user-defined rules that run once against a transcript after it is
 produced, before any webhook delivery. `Action.kt` is the data class and the
-`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL`/`PLAY_MEDIA`/`MEDIA_KEY`/`HANG_UP` enum,
+`ALARM`/`CALENDAR`/`WEBHOOK`/`FAKE_CALL`/`PLAY_MEDIA`/`MEDIA_KEY`/`HANG_UP`/`TAKE_PHOTO`
+enum,
 `ActionMatcher.kt` holds the pure ordered matching rules (unit-tested by
 `ActionMatcherTest.kt`; `ActionTest.kt` covers JSON parsing and
 round-tripping), `ActionRunner.kt` performs the
-ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY/HANG_UP side effects
+ALARM/CALENDAR/FAKE_CALL/PLAY_MEDIA/MEDIA_KEY/HANG_UP/TAKE_PHOTO side effects
 (unit-tested by
 `ActionRunnerTest.kt`), and `TimeParseClient.kt` asks the model for a time
 (unit-tested by `TimeParseClientTest.kt`). A separate `ClickActionRunner.kt`
@@ -339,18 +341,34 @@ Key details:
   only logged. `endCall` is deprecated since API 29 but is still the only way to
   end a call without being the default dialer, so the warning is suppressed
   locally.
+- A TAKE_PHOTO starts `PhotoCaptureActivity`, a no-UI activity in its own task
+  (excluded from recents, like the assistant popup), and takes one photo with
+  CameraX's `ImageCapture` on the rear camera. The activity writes straight
+  through `MediaStore` to `Pictures/Middle` as a JPEG: Android 10+ uses
+  `RELATIVE_PATH`, while Android 9 and below need an explicit `DATA` path and
+  `WRITE_EXTERNAL_STORAGE`. Android 11+ blocks camera access from a background
+  service, so the activity performs the capture; starting it from the background
+  needs the overlay permission, and without it a tap-to-take-photo notification
+  is posted instead. A missing `CAMERA` permission posts an info notification
+  and counts as no result. The activity sets show-when-locked and
+  turn-screen-on, posts a success notification (or an info notification on
+  failure), and always finishes, including after a 15 s timeout. Failures log
+  under `[action]` and through `WebhookLog`.
 - The clock app is only started when the app can draw overlays. Without
   `SYSTEM_ALERT_WINDOW` the alarm is posted as a notification the user taps;
   `ActionsScreen.kt` shows a card to grant it. The alarm intent needs
   `com.android.alarm.permission.SET_ALARM`, reminders need
-  `READ_CALENDAR`/`WRITE_CALENDAR`, and hang up needs `ANSWER_PHONE_CALLS`
-  (requested from the Actions screen when the action is added or a hang-up click
-  count is picked).
+  `READ_CALENDAR`/`WRITE_CALENDAR`, take photo needs `CAMERA` (plus
+  `WRITE_EXTERNAL_STORAGE` on Android 9 and below), and hang up needs
+  `ANSWER_PHONE_CALLS`;
+  requested from the Actions screen when the action is added or a hang-up click
+  count is picked.
 - All action notifications use the `middle_actions` channel. Successes, the
-  tap-to-set alarm and tap-to-play media use ID 5 so a later result replaces the
-  pending one; failures and other info use ID 6 so they cannot replace it. The
-  tap-to-set alarm and tap-to-play media are the only notifications that do not
-  open the app — every other one opens the app.
+  tap-to-set alarm, tap-to-play media and tap-to-take-photo use ID 5 so a later
+  result replaces the pending one; failures and other info use ID 6 so they
+  cannot replace it. The tap-to-set alarm, tap-to-play media and
+  tap-to-take-photo are the only notifications that do not open the app — every
+  other one opens the app.
 - The legacy global webhook settings are migrated into a catch-all WEBHOOK
   action (`pattern = ".*"`, `stop = false`) by
   `Settings.migrateGlobalWebhookToAction()`. A non-empty legacy URL migrates
@@ -452,8 +470,8 @@ The runner reads the bound action and:
   `$rest` both empty and the action's body template (or the default). There is no
   queueing and no retry; a blank URL is logged and skipped. The outcome is logged
   through `WebhookLog`.
-- `FAKE_CALL` / `MEDIA_KEY`: run directly through `ActionRunner` with an empty
-  transcript.
+- `FAKE_CALL` / `MEDIA_KEY` / `TAKE_PHOTO`: run directly through `ActionRunner`
+  with an empty transcript.
 - `ALARM` / `CALENDAR` / `PLAY_MEDIA`: logged and ignored because a click has no
   transcript; the click-action UI never offers them.
 - `HANG_UP`: logged and ignored; hang up is a setting now. A HANG_UP bound to a
@@ -490,7 +508,7 @@ divider. Non-linear correction applied: `factor = 13020 − 65 × raw_mV / 100`.
 | Screen | Route | Description |
 |---|---|---|
 | Recordings | `recordings` | List of synced recordings (newest first). Each card shows timestamp, duration, transcript preview (3 lines), and play/share/delete/retry-pipeline buttons. A header card always shows the selected device's sync status (a fixed `Index` label for the ring) and its battery voltage. A hold-to-record mic button saves a phone voice note through the same transcribe/webhook pipeline (no new-recording notification). |
-| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a multiline message field (prefilled with filler lines), a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call, play-media or hang-up action; adding a hang-up action or picking a non-Off hang-up click count asks for the `ANSWER_PHONE_CALLS` permission. The Ring button section binds each of the 1/2/3 clicks to an action and offers a "Hang up calls with" Off/1/2/3 dropdown as the separate hang-up override. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
+| Actions | `actions` | Ordered list of actions. Each card has a type label, enable toggle, editable pattern, a "stop after this action" switch, move up/down and delete; webhook cards add URL and body template fields, and fake-call cards add caller name/number fields, a multiline message field (prefilled with filler lines), a contact picker and a hint with a button to open the phone app's Calling accounts settings. Top bar adds an alarm, reminder, webhook, fake-call, play-media, hang-up or take-photo action; adding a hang-up action or picking a non-Off hang-up click count asks for the `ANSWER_PHONE_CALLS` permission, and adding or binding a take-photo action asks for `CAMERA` (plus `WRITE_EXTERNAL_STORAGE` on Android 9 and below). The Ring button section binds each of the 1/2/3 clicks to an action and offers a "Hang up calls with" Off/1/2/3 dropdown as the separate hang-up override. A calendar row picks the calendar for reminders, and a card is shown when the overlay permission is missing. |
 | Log | `log` | Monospace pipeline and webhook delivery log (last 50 entries, errors in red). |
 | Settings | `settings` | Sync device choice (pendant or ring) with a bonded-ring picker when ring is selected, transcription provider and its API key (masked), Spotify Client ID and Client Secret (masked), background sync toggle, transcription toggle, pairing token and unpair, settings backup export/import, and a link to the system's digital-assistant picker. |
 | Assistant | `ASSIST` / `VOICE_COMMAND` | Not a nav route: a dialog-style card shown when the system assistant is triggered (long-press power). Shows "Listening…" and elapsed time with a Stop button; Silero VAD ends the recording when the speaker stops, then it saves through the same pipeline. Has no launcher icon and is excluded from recents. |

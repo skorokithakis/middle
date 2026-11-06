@@ -90,6 +90,18 @@ class ClickActionRunnerTest {
     }
 
     @Test
+    fun takePhotoRunsThroughActionRunnerWithEmptyTranscript() {
+        val action = action("a1", ActionType.TAKE_PHOTO)
+
+        runner(mapOf(2 to action)).run(2)
+
+        assertEquals(1, runCalls)
+        assertEquals(action, capturedHit?.action)
+        assertEquals("", capturedHit?.rest)
+        assertEquals(0, capturedHit?.index)
+    }
+
+    @Test
     fun staleHangUpClickActionIsIgnored() {
         // A HANG_UP bound to a click slot by an earlier build is logged and
         // ignored; hang up is a setting now.
