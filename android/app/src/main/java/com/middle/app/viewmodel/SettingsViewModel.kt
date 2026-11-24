@@ -33,6 +33,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _elevenLabsApiKey = MutableStateFlow(settings.elevenLabsApiKey)
     val elevenLabsApiKey: StateFlow<String> = _elevenLabsApiKey
 
+    private val _sonioxApiKey = MutableStateFlow(settings.sonioxApiKey)
+    val sonioxApiKey: StateFlow<String> = _sonioxApiKey
+
     private val _spotifyClientId = MutableStateFlow(settings.spotifyClientId)
     val spotifyClientId: StateFlow<String> = _spotifyClientId
 
@@ -85,6 +88,11 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setElevenLabsApiKey(key: String) {
         settings.elevenLabsApiKey = key
         _elevenLabsApiKey.value = key
+    }
+
+    fun setSonioxApiKey(key: String) {
+        settings.sonioxApiKey = key
+        _sonioxApiKey.value = key
     }
 
     fun setSpotifyClientId(id: String) {
@@ -256,6 +264,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private fun refreshFromSettings() {
         _openAiApiKey.value = settings.openAiApiKey
         _elevenLabsApiKey.value = settings.elevenLabsApiKey
+        _sonioxApiKey.value = settings.sonioxApiKey
         _spotifyClientId.value = settings.spotifyClientId
         _spotifyClientSecret.value = settings.spotifyClientSecret
         _transcriptionProvider.value = settings.transcriptionProvider

@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Manages the BLE connection to the Middle pendant and implements the
- * sync protocol. Mirrors the logic in sync.py exactly.
+ * sync protocol.
  */
 class PendantBleManager(context: Context) : BleManager(context) {
 
@@ -91,7 +91,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
     }
 
     /**
-     * Connect to a pendant device with a 10-second timeout, matching sync.py.
+     * Connect to a pendant device with a 10-second timeout.
      * MTU negotiation is performed immediately after connection so it completes
      * before readPairingStatus() or any other GATT operation is called.
      */
@@ -232,8 +232,7 @@ class PendantBleManager(context: Context) : BleManager(context) {
                 val result = withTimeout(TRANSFER_TOTAL_TIMEOUT_MILLIS) {
                     writeCommand(COMMAND_REQUEST_NEXT)
 
-                    // Brief pause for the pendant to prepare the file info,
-                    // matching the 100ms sleep in sync.py.
+                    // Brief pause for the pendant to prepare the file info.
                     kotlinx.coroutines.delay(100)
 
                     val expectedSize = readFileInfo()

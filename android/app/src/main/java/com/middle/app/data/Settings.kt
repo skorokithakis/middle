@@ -17,6 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 data class SettingsBackup(
     val openAiApiKey: String? = null,
     val elevenLabsApiKey: String? = null,
+    val sonioxApiKey: String? = null,
     val spotifyClientId: String? = null,
     val spotifyClientSecret: String? = null,
     val transcriptionProvider: String? = null,
@@ -68,6 +69,10 @@ class Settings(context: Context) {
     var elevenLabsApiKey: String
         get() = prefs.getString(KEY_ELEVENLABS_API_KEY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_ELEVENLABS_API_KEY, value).apply()
+
+    var sonioxApiKey: String
+        get() = prefs.getString(KEY_SONIOX_API_KEY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SONIOX_API_KEY, value).apply()
 
     // Spotify client-credentials pair for the PLAY_MEDIA action. The app polls
     // the Web API for a track URI, then hands it to the installed Spotify app.
@@ -301,6 +306,7 @@ class Settings(context: Context) {
         put(BACKUP_VERSION_KEY, BACKUP_VERSION)
         put(KEY_OPENAI_API_KEY, openAiApiKey)
         put(KEY_ELEVENLABS_API_KEY, elevenLabsApiKey)
+        put(KEY_SONIOX_API_KEY, sonioxApiKey)
         put(KEY_SPOTIFY_CLIENT_ID, spotifyClientId)
         put(KEY_SPOTIFY_CLIENT_SECRET, spotifyClientSecret)
         put(KEY_TRANSCRIPTION_PROVIDER, transcriptionProvider)
@@ -386,6 +392,7 @@ class Settings(context: Context) {
             SettingsBackup(
                 openAiApiKey = json.stringOrNull(KEY_OPENAI_API_KEY),
                 elevenLabsApiKey = json.stringOrNull(KEY_ELEVENLABS_API_KEY),
+                sonioxApiKey = json.stringOrNull(KEY_SONIOX_API_KEY),
                 spotifyClientId = json.stringOrNull(KEY_SPOTIFY_CLIENT_ID),
                 spotifyClientSecret = json.stringOrNull(KEY_SPOTIFY_CLIENT_SECRET),
                 transcriptionProvider = json.stringOrNull(KEY_TRANSCRIPTION_PROVIDER),
@@ -414,6 +421,7 @@ class Settings(context: Context) {
     fun applyBackup(backup: SettingsBackup) {
         backup.openAiApiKey?.let { openAiApiKey = it }
         backup.elevenLabsApiKey?.let { elevenLabsApiKey = it }
+        backup.sonioxApiKey?.let { sonioxApiKey = it }
         backup.spotifyClientId?.let { spotifyClientId = it }
         backup.spotifyClientSecret?.let { spotifyClientSecret = it }
         backup.transcriptionProvider?.let { transcriptionProvider = it }
@@ -443,6 +451,7 @@ class Settings(context: Context) {
     companion object {
         const val TRANSCRIPTION_PROVIDER_OPENAI = "openai"
         const val TRANSCRIPTION_PROVIDER_ELEVENLABS = "elevenlabs"
+        const val TRANSCRIPTION_PROVIDER_SONIOX = "soniox"
 
         // Process-wide because every Settings instance has its own encrypted
         // preferences wrapper, but a session change has to reach listeners
@@ -474,6 +483,7 @@ class Settings(context: Context) {
 
         private const val KEY_OPENAI_API_KEY = "openai_api_key"
         private const val KEY_ELEVENLABS_API_KEY = "elevenlabs_api_key"
+        private const val KEY_SONIOX_API_KEY = "soniox_api_key"
         private const val KEY_SPOTIFY_CLIENT_ID = "spotify_client_id"
         private const val KEY_SPOTIFY_CLIENT_SECRET = "spotify_client_secret"
         private const val KEY_TRANSCRIPTION_PROVIDER = "transcription_provider"
@@ -499,7 +509,9 @@ class Settings(context: Context) {
 
         // A backup is one flat object tagged with the format version. New
         // settings are added to a later version's backup, so a file written by
-        // an older build never has to know about them.
+        // an older build never has to know about them. A purely additive key
+        // stays in the current version: bumping would make older builds reject
+        // the whole file over a key they cannot use anyway.
         private const val BACKUP_VERSION_KEY = "version"
         private const val BACKUP_VERSION = 2
 
@@ -508,6 +520,7 @@ class Settings(context: Context) {
         private val BACKUP_STRING_KEYS = listOf(
             KEY_OPENAI_API_KEY,
             KEY_ELEVENLABS_API_KEY,
+            KEY_SONIOX_API_KEY,
             KEY_SPOTIFY_CLIENT_ID,
             KEY_SPOTIFY_CLIENT_SECRET,
             KEY_TRANSCRIPTION_PROVIDER,

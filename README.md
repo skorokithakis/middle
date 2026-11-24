@@ -6,7 +6,7 @@ Index 01](https://repebble.com/index), but I wanted it now, so I made it.
 It uses a microphone and an ESP32 S3 to record your thoughts and transfer them to your
 phone/computer/whatever for later processing.
 
-There's an Android app and a Python script so you can transfer the files to the PC.
+There's an Android app so you can transfer the files from the pendant and process them.
 
 The Index 01 did eventually arrive, so the Android app now syncs from one of those as well.
 You pick which device you want in the settings, one at a time, and everything after that is
@@ -18,10 +18,10 @@ posted to your webhook.
 * Press a button to record, release to stop.
 * Bluetooth syncing happens after a recording, or tap the button quickly to force a BT wakeup/sync.
 * Supports long audio files (probably many minutes).
-* Transferring files to the PC is pretty fast.
-* Optionally transcribes the audio files using OpenAI's GPT 4o transcribe.
+* Transferring files to the phone is pretty fast.
+* Optionally transcribes the audio files using OpenAI, ElevenLabs or Soniox.
 * Light on battery life, since it consumes no power when not in use.
-* Privacy-preserving, no connections anywhere, no nothing.
+* Privacy-preserving. Recordings stay on your devices, unless you turn on transcription, which uploads them to the provider you chose.
 * The Android app also syncs from a real Pebble Index 01, if you happen to have one.
 
 
@@ -38,8 +38,8 @@ The mic wants four pins: SCK on 6, WS on 5, SD on 7, and its power on 9, so the 
 can cut power to it during deep sleep. The button goes between pin 2 and GND, since that's
 the pin the chip wakes up on. Battery voltage is read on pin 3 through a divider.
 
-Flash the firmware and use the provided Python script to transfer the files from the
-pendant. Done.
+Flash the firmware and use the Android app to transfer the files from the pendant.
+Done.
 
 
 ## Index 01 support
@@ -62,5 +62,4 @@ it just quietly writes 44100 into the file instead and plays everything back fou
 times too fast. And the ring stores about five minutes of audio, so it's worth syncing
 before you go away for a week.
 
-Only the Android app talks to the ring. The Python script is pendant-only, and I have no
-plans to change that.
+Only the Android app talks to the ring.

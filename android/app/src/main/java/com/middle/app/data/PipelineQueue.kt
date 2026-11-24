@@ -763,12 +763,14 @@ class PipelineQueue(
     private fun selectedApiKey(provider: String): String = when (provider) {
         Settings.TRANSCRIPTION_PROVIDER_OPENAI -> settings.openAiApiKey.trim()
         Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> settings.elevenLabsApiKey.trim()
+        Settings.TRANSCRIPTION_PROVIDER_SONIOX -> settings.sonioxApiKey.trim()
         else -> ""
     }
 
     private fun providerDisplayName(provider: String): String = when (provider) {
         Settings.TRANSCRIPTION_PROVIDER_OPENAI -> "OpenAI"
         Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> "ElevenLabs"
+        Settings.TRANSCRIPTION_PROVIDER_SONIOX -> "Soniox"
         else -> provider
     }
 

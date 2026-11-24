@@ -63,6 +63,7 @@ fun SettingsScreen(
     val transcriptionProvider by viewModel.transcriptionProvider.collectAsState()
     val openAiApiKey by viewModel.openAiApiKey.collectAsState()
     val elevenLabsApiKey by viewModel.elevenLabsApiKey.collectAsState()
+    val sonioxApiKey by viewModel.sonioxApiKey.collectAsState()
     val spotifyClientId by viewModel.spotifyClientId.collectAsState()
     val spotifyClientSecret by viewModel.spotifyClientSecret.collectAsState()
     val backgroundSync by viewModel.backgroundSyncEnabled.collectAsState()
@@ -102,14 +103,29 @@ fun SettingsScreen(
         }
     }
 
-    val isOpenAiProvider = transcriptionProvider == Settings.TRANSCRIPTION_PROVIDER_OPENAI
-    val apiKey = if (isOpenAiProvider) openAiApiKey else elevenLabsApiKey
-    val apiKeyLabel = if (isOpenAiProvider) "OpenAI API key" else "ElevenLabs API key"
-    val apiKeyPlaceholder = if (isOpenAiProvider) "sk-..." else "xi-..."
-    val apiKeyHelp = if (isOpenAiProvider) {
-        "Create an API key in your OpenAI account settings."
-    } else {
-        "Create an API key in your ElevenLabs profile settings."
+    // Each provider keeps its own key, so switching provider does not overwrite
+    // the key of the one that was selected before.
+    val providerApiKey = when (transcriptionProvider) {
+        Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> elevenLabsApiKey
+        Settings.TRANSCRIPTION_PROVIDER_SONIOX -> sonioxApiKey
+        else -> openAiApiKey
+    }
+    val providerApiKeyLabel = when (transcriptionProvider) {
+        Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> "ElevenLabs API key"
+        Settings.TRANSCRIPTION_PROVIDER_SONIOX -> "Soniox API key"
+        else -> "OpenAI API key"
+    }
+    val providerApiKeyPlaceholder = when (transcriptionProvider) {
+        Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS -> "xi-..."
+        Settings.TRANSCRIPTION_PROVIDER_SONIOX -> "snx_..."
+        else -> "sk-..."
+    }
+    val providerApiKeyHelp = when (transcriptionProvider) {
+        Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS ->
+            "Create an API key in your ElevenLabs profile settings."
+        Settings.TRANSCRIPTION_PROVIDER_SONIOX ->
+            "Create an API key in the Soniox console."
+        else -> "Create an API key in your OpenAI account settings."
     }
 
     Scaffold(
@@ -194,47 +210,56 @@ fun SettingsScreen(
 
             Text("Transcription provider", style = MaterialTheme.typography.titleSmall)
             Spacer(modifier = Modifier.height(4.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(
-                    selected = isOpenAiProvider,
-                    onClick = { viewModel.setTranscriptionProvider(Settings.TRANSCRIPTION_PROVIDER_OPENAI) },
+            Column {
+                ProviderOption(
+                    label = "OpenAI",
+                    selected = transcriptionProvider == Settings.TRANSCRIPTION_PROVIDER_OPENAI,
+                    onSelect = {
+                        viewModel.setTranscriptionProvider(Settings.TRANSCRIPTION_PROVIDER_OPENAI)
+                    },
                 )
-                Text("OpenAI")
-                Spacer(modifier = Modifier.weight(1f))
-                RadioButton(
-                    selected = !isOpenAiProvider,
-                    onClick = { viewModel.setTranscriptionProvider(Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS) },
+                ProviderOption(
+                    label = "ElevenLabs",
+                    selected = transcriptionProvider == Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS,
+                    onSelect = {
+                        viewModel.setTranscriptionProvider(Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS)
+                    },
                 )
-                Text("ElevenLabs")
+                ProviderOption(
+                    label = "Soniox",
+                    selected = transcriptionProvider == Settings.TRANSCRIPTION_PROVIDER_SONIOX,
+                    onSelect = {
+                        viewModel.setTranscriptionProvider(Settings.TRANSCRIPTION_PROVIDER_SONIOX)
+                    },
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Text(apiKeyLabel, style = MaterialTheme.typography.titleSmall)
+            Text(providerApiKeyLabel, style = MaterialTheme.typography.titleSmall)
             Spacer(modifier = Modifier.height(4.dp))
             OutlinedTextField(
-                value = apiKey,
+                value = providerApiKey,
                 onValueChange = {
-                    if (isOpenAiProvider) {
-                        viewModel.setOpenAiApiKey(it)
-                    } else {
-                        viewModel.setElevenLabsApiKey(it)
+                    when (transcriptionProvider) {
+                        Settings.TRANSCRIPTION_PROVIDER_ELEVENLABS ->
+                            viewModel.setElevenLabsApiKey(it)
+                        Settings.TRANSCRIPTION_PROVIDER_SONIOX ->
+                            viewModel.setSonioxApiKey(it)
+                        else -> viewModel.setOpenAiApiKey(it)
                     }
                 },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
-                placeholder = { Text(apiKeyPlaceholder) },
+                placeholder = { Text(providerApiKeyPlaceholder) },
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
-                text = apiKeyHelp,
+                text = providerApiKeyHelp,
                 style = MaterialTheme.typography.bodySmall,
             )
-            if (transcription && apiKey.isBlank()) {
+            if (transcription && providerApiKey.isBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Automatic transcription is enabled, but this provider has no API key.",
@@ -432,6 +457,26 @@ private fun Context.openVoiceInputSettings() {
         Intent(android.provider.Settings.ACTION_SETTINGS)
     }
     startActivity(target)
+}
+
+@Composable
+private fun ProviderOption(
+    label: String,
+    selected: Boolean,
+    onSelect: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onSelect),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(
+            selected = selected,
+            onClick = onSelect,
+        )
+        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+    }
 }
 
 @Composable

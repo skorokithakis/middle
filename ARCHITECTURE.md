@@ -13,7 +13,6 @@ over BLE when available.
 ```
 middle/
 ├── src/main.cpp          # ESP32-S3 firmware (Arduino via PlatformIO)
-├── sync.py               # Host-side BLE sync + transcription (Python, uv script)
 ├── android/              # Android companion app (Kotlin + Jetpack Compose)
 │   └── app/src/main/java/com/middle/app/
 │       ├── ble/          # BLE managers, sync loops and foreground sync service
@@ -47,7 +46,7 @@ middle/
 │       ├── transcription/
 │       │   ├── SpotifySearchClient.kt  # Spotify Web API client-credentials token + top-track search (play-media action)
 │       │   ├── TimeParseClient.kt      # OpenAI chat completion that extracts a time/title as strict JSON (gpt-5.6-luna)
-│       │   └── TranscriptionClient.kt  # OpenAI gpt-4o-transcribe via raw OkHttp multipart POST
+│       │   └── TranscriptionClient.kt  # OpenAI, ElevenLabs or Soniox speech-to-text via raw OkHttp (Soniox uploads, polls, then deletes)
 │       ├── ui/           # Compose screens
 │       │   ├── ActionsScreen.kt        # Ordered action list; add by type, edit pattern/stop/webhook/fake-call (voice picker and preview)/play-media/hang-up/take-photo, reorder/delete; contact picker, calendar picker, ANSWER_PHONE_CALLS and CAMERA prompts and overlay-permission card
 │       │   ├── FakeCallVoice.kt        # Screen-scoped TextToSpeech listing the installed voices and previewing a fake call's message
@@ -64,8 +63,7 @@ middle/
 │       ├── PhotoCaptureActivity.kt     # No-UI rear-camera capture for TAKE_PHOTO actions, saves to Pictures/Middle
 │       ├── BootReceiver.kt             # Restarts SyncForegroundService after reboot when permissions allow
 │       └── MiddleApplication.kt        # App singleton: RecordingsRepository, PipelineQueue, notification channels
-├── platformio.ini        # PlatformIO build config
-└── recordings/           # Output directory for sync.py (gitignored)
+└── platformio.ini        # PlatformIO build config
 ```
 
 ---
@@ -82,14 +80,6 @@ middle/
 - **Audio**: INMP441 I2S MEMS mic; IMA ADPCM encoding at 16 kHz mono (~4 KB/s)
 - **Concurrency**: FreeRTOS — sampling loop on core 1, flash writer task on core 0
 
-### Host sync script (`sync.py`)
-- **Runtime**: Python ≥ 3.8 via `uv run --script` (inline dependency metadata)
-- **BLE**: `bleak` (async BLE client)
-- **Audio**: `lameenc` (MP3 encoding); IMA ADPCM decoded in pure Python
-- **Transcription**: `openai` (GPT-4o Transcribe, optional via `OPENAI_API_KEY`)
-- **Progress**: `tqdm`
-- **Output format**: MP3 (64 kbps, mono, 16 kHz), saved to `recordings/`
-
 ### Android app (`android/`)
 - **Language**: Kotlin 2.2.21 (AGP 8.13.2, Gradle 8.14.3)
 - **UI**: Jetpack Compose + Material3 (`compose-bom:2025.09.00`)
@@ -98,13 +88,13 @@ middle/
   pendant; haversine Android library (`io.github.coredevices.haversine:haversine-android`)
   for the Index 01 ring
 - **HTTP**: OkHttp 4.12.0 (webhook delivery and transcription API calls)
-- **Transcription**: OpenAI API via OkHttp (raw HTTP multipart, not SDK)
+- **Transcription**: OpenAI, ElevenLabs or Soniox API via OkHttp (raw HTTP, not SDK)
 - **Storage**: Encrypted SharedPreferences (`security-crypto`) for API key and all
   settings; plain JSON job files under `filesDir/pipeline/` for the queue;
   M4A files under `filesDir/recordings/`
 - **Playback**: `MediaPlayer` (standard Android, not ExoPlayer despite the dependency)
 - **Audio encoding**: `MediaCodec` AAC encoder + `MediaMuxer` → M4A (not MP3, because
-  Android has no built-in MP3 encoder; OpenAI accepts M4A fine)
+  Android has no built-in MP3 encoder; all three transcription providers accept M4A)
 - **Speech detection**: Silero VAD (`com.github.gkonovalov.android-vad:silero:2.0.10`,
   only published on JitPack) drives automatic capture stop for the phone mic and the
   system-assistant path
@@ -152,11 +142,11 @@ INMP441 (I2S, 32-bit stereo) → left channel >> 16 → int16 PCM
   → IMA ADPCM encoder (firmware, src/main.cpp)
   → packed nibbles in LittleFS (.ima file, 4-byte sample-count header)
   → BLE notify stream
-  → reassembled on host/Android
-  → IMA ADPCM decoder (sync.py or android/.../ImaAdpcmDecoder.kt)
+  → reassembled on Android
+  → IMA ADPCM decoder (android/.../ImaAdpcmDecoder.kt)
   → signed 16-bit PCM
-  → MP3 (lameenc, sync.py) or AAC/M4A (MediaCodec, Android)
-  → optional transcription (OpenAI gpt-4o-transcribe)
+  → AAC/M4A (MediaCodec, Android)
+  → optional transcription (OpenAI gpt-4o-transcribe, ElevenLabs scribe_v2 or Soniox stt-async-v6)
   → optional actions (ActionMatcher → ActionRunner: clock app, calendar event, fake call or play media)
   → optional per-action webhook delivery (POST with a JSON body template, $transcript/$rest)
 ```
@@ -214,6 +204,12 @@ Key details:
   skips the rest of this pass), or bad-file (400/413/415/422, drops the job);
   webhook responses are success, drop (4xx except 408/429), or retry. Nothing
   is abandoned except transcription bad-file and webhook 4xx.
+- The transcription provider is read from Settings for every attempt: OpenAI
+  (`gpt-4o-transcribe`) and ElevenLabs (`scribe_v2`) return the text in the POST
+  response. Soniox (`stt-async-v6`) uploads the audio, polls the job once a
+  second for up to 2 minutes, fetches the transcript, then deletes the
+  transcription and the uploaded file on success and on failure; a cleanup
+  failure is logged and never fails a transcript that was already fetched.
 - HTTP delivery is in `WebhookClient.kt` (OkHttp, 10 s connect / 30 s read
   timeout, Basic Auth extracted from URL credentials). The body template
   substitutes `$transcript` and `$rest` (JSON-escaped, single pass) and defaults
@@ -556,7 +552,6 @@ A new recording saved by either sync path posts a "New recording added" notifica
 | `src/main.cpp` | Entire firmware: recording, BLE server, ADPCM encoder, notification retry |
 | `src/main.cpp:send_notification()` (line 570) | NimBLE notification retry loop (up to 200 attempts, 5 ms delay) |
 | `src/main.cpp:record_and_save()` (line 434) | I2S capture, ring buffer, FreeRTOS writer task, ADPCM encoding |
-| `sync.py:sync_recordings()` (line 210) | BLE transfer loop with per-file retry (`MAX_FILE_TRANSFER_ATTEMPTS=3`) and stall/total timeouts |
 | `android/.../PipelineQueue.kt` | Durable transcribe/webhook jobs, in-memory backoff, network gate |
 | `android/.../PipelinePolicy.kt` | Pure backoff and outcome classification rules |
 | `android/.../WebhookClient.kt` | OkHttp POST, Basic Auth from URL credentials |
@@ -564,7 +559,7 @@ A new recording saved by either sync path posts a "New recording added" notifica
 | `android/.../PendantBleManager.kt` | Nordic BLE manager: scan, connect, sync orchestration |
 | `android/.../SyncForegroundService.kt` | Foreground service: selects the pendant or ring loop, pairing handshake, per-file sync, enqueues saved recordings for the pipeline |
 | `android/.../IndexSyncLoop.kt` | Ring path: awaits Bluetooth, collects vendor satellite statuses, persists completed ring audio |
-| `android/.../TranscriptionClient.kt` | OpenAI transcription API calls |
+| `android/.../TranscriptionClient.kt` | OpenAI, ElevenLabs and Soniox transcription API calls |
 | `android/.../AudioEncoder.kt` | MediaCodec AAC encoder + MediaMuxer → M4A |
 | `android/.../ImaAdpcmDecoder.kt` | Pure-Kotlin ADPCM decoder (must stay in sync with firmware tables) |
 | `android/.../BleConstants.kt` | Single source of truth for UUIDs and command bytes on Android |
@@ -580,12 +575,6 @@ pio run -e esp32-s3-devkitc-1 -t upload  # build + flash
 pio device monitor -b 115200           # serial monitor
 pio run -e esp32-s3-devkitc-1 -t uploadfs  # flash LittleFS image
 pio check -e esp32-s3-devkitc-1        # static analysis
-```
-
-### Host sync script
-```sh
-uv run sync.py                         # run (fetches deps inline)
-uv run python -m py_compile sync.py    # syntax check
 ```
 
 ### Android app
@@ -605,20 +594,17 @@ uv run python -m py_compile sync.py    # syntax check
   `TranscriptionResult` (`Success`/`HttpError`/`NetworkError`/`ParseError`);
   `PipelinePolicy` classifies it into retry/skip/drop.
 - **Logging**: firmware uses `Serial.printf` with subsystem tags (`[ble]`, `[rec]`,
-  `[bat]`, `[flash]`). Python uses a timestamped `log()` helper. Android uses
-  `android.util.Log` + `WebhookLog` (in-memory StateFlow for the UI).
-- **Naming**: C++ uses `snake_case` throughout. Python uses `snake_case` functions /
-  variables, `UPPER_SNAKE_CASE` constants. Kotlin follows standard Android
+  `[bat]`, `[flash]`). Android uses `android.util.Log` + `WebhookLog` (in-memory
+  StateFlow for the UI).
+- **Naming**: C++ uses `snake_case` throughout. Kotlin follows standard Android
   conventions (`camelCase`, `PascalCase`).
-- **Types**: Python functions are fully annotated. C++ uses fixed-width types
-  (`uint8_t`, `uint16_t`, `uint32_t`) where protocol size matters.
-- **Protocol constants**: BLE UUIDs and command bytes are defined in all three
-  places — `src/main.cpp`, `sync.py`, and `android/.../BleConstants.kt` — any
-  change must be coordinated across all three.
-- **Settings storage**: all settings (including the OpenAI API key) are stored in
+- **Types**: C++ uses fixed-width types (`uint8_t`, `uint16_t`, `uint32_t`) where
+  protocol size matters.
+- **Protocol constants**: BLE UUIDs and command bytes are defined in both
+  places — `src/main.cpp` and `android/.../BleConstants.kt` — any change must be
+  coordinated across both.
+- **Settings storage**: all settings (including the API keys) are stored in
   `EncryptedSharedPreferences` using AES-256-GCM. No plaintext secrets on disk.
-- **Audio format divergence**: `sync.py` outputs MP3 (via `lameenc`); the Android
-  app outputs M4A/AAC (via `MediaCodec`). Both are accepted by OpenAI's API.
 
 ---
 
@@ -634,7 +620,7 @@ uv run python -m py_compile sync.py    # syntax check
   ring-click dispatch rules; `WebhookClientTest.kt` the
   body template substitution; `TimeParseClientTest.kt` the time-parse response;
   and `SpeechEndpointerTest.kt` the VAD endpointer's reframing and stop/discard
-  rules. There are no firmware tests, Python tests, or Android instrumentation
+  rules. There are no firmware tests or Android instrumentation
   tests. `AGENTS.md` documents the intended commands.
 - **`backgroundSyncEnabled` setting is stored but not enforced**: `Settings.kt`
   exposes the toggle and `SettingsScreen.kt` renders it, but
